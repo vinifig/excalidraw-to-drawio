@@ -5,9 +5,73 @@
   const outputText = document.getElementById('outputText');
   const info = document.getElementById('info');
   const sampleBtn = document.getElementById('sampleBtn');
+  const presetSelect = document.getElementById('presetSelect');
+  const optionGrid = document.getElementById('optionGrid');
 
   let lastOutput = '';
   let fileBaseName = 'diagram';
+
+  // Style options: one <select> per converter option, driven by the preset
+  const { OPTION_DEFS, PRESETS } = window.ExcDrawio;
+  const STORAGE_KEY = 'excdrawio.styleOptions';
+  const optionSelects = {};
+  for(const def of OPTION_DEFS){
+    const label = document.createElement('label');
+    const span = document.createElement('span');
+    span.textContent = def.label;
+    const select = document.createElement('select');
+    for(const [value, text] of def.choices){
+      const opt = document.createElement('option');
+      opt.value = value; opt.textContent = text;
+      select.appendChild(opt);
+    }
+    select.addEventListener('change', () => {
+      // Tweaking any option turns the preset into a custom one
+      presetSelect.value = 'custom';
+      onOptionsChanged();
+    });
+    label.append(span, select);
+    optionGrid.appendChild(label);
+    optionSelects[def.key] = select;
+  }
+
+  function applyPreset(name){
+    const preset = PRESETS[name];
+    if(!preset) return;
+    for(const key in optionSelects) optionSelects[key].value = preset[key];
+  }
+
+  function currentOptions(){
+    const opts = { preset: presetSelect.value };
+    for(const key in optionSelects) opts[key] = optionSelects[key].value;
+    return opts;
+  }
+
+  function onOptionsChanged(){
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(currentOptions())); } catch{ /* storage unavailable */ }
+    if(inputText.value.trim()) performConversion();
+  }
+
+  presetSelect.addEventListener('change', () => {
+    applyPreset(presetSelect.value);
+    onOptionsChanged();
+  });
+
+  (function restoreOptions(){
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch{ /* ignore */ }
+    if(saved && (saved.preset === 'custom' || PRESETS[saved.preset])){
+      presetSelect.value = saved.preset;
+      applyPreset(saved.preset === 'custom' ? 'excalidraw' : saved.preset);
+      if(saved.preset === 'custom'){
+        for(const key in optionSelects){
+          if(saved[key] && [...optionSelects[key].options].some(o => o.value === saved[key])) optionSelects[key].value = saved[key];
+        }
+      }
+    } else {
+      applyPreset(presetSelect.value);
+    }
+  })();
 
   async function performConversion(){
     info.textContent = '';
@@ -16,7 +80,7 @@
     try {
       const data = inputText.value.trim();
       if(!data) return;
-      const out = window.ExcDrawio.convertExcalidrawToDrawio(data);
+      const out = window.ExcDrawio.convertExcalidrawToDrawio(data, currentOptions());
       outputText.value = out;
       lastOutput = out;
       downloadBtn.disabled = false;

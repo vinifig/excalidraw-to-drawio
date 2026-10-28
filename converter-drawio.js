@@ -1,15 +1,199 @@
 // Excalidraw -> draw.io (mxGraph) minimal client-side converter
 // NOTE: This is a heuristic lightweight mapping for common primitive shapes
-// (rectangle, ellipse, diamond, text, line/arrow). Images and freedraw are
+// (rectangle, ellipse, diamond, text, line/arrow, frame). Images and freedraw are
 // embedded as data URIs (images) or paths (simplified) inside a shape.
 // draw.io file format is an XML <mxfile> containing <diagram> with a base64
 // compressed/zlib+base64 encoded mxGraphModel by default. For simplicity
 // here we output a plain (uncompressed) <mxfile><diagram> containing raw
 // mxGraphModel XML; draw.io will still import it.
 // We assign incremental IDs; parent layer is id=0, default layer = 1.
+// Excalidraw frames become draw.io containers; elements with a frameId are
+// nested inside them using coordinates relative to the frame.
+//
+// Styling is driven by conversion options (see OPTION_DEFS / PRESETS):
+// "excalidraw" keeps the original look, "drawio" maps everything to draw.io's
+// default conventions (palette, fonts, square/rounded shapes, swimlanes...),
+// and any single option can be overridden on top of a preset.
 
 (function(global){
   'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Conversion options
+  // ---------------------------------------------------------------------------
+
+  const OPTION_DEFS = [
+    { key: 'colors', label: 'Colors', choices: [
+      ['keep', 'Keep Excalidraw colors'],
+      ['palette', 'Map to draw.io palette'],
+      ['default', 'draw.io default (no colors)']
+    ]},
+    { key: 'transparentFill', label: 'Transparent fills', choices: [
+      ['keep', 'Keep transparent'],
+      ['white', 'draw.io default (white)']
+    ]},
+    { key: 'roundness', label: 'Corners', choices: [
+      ['keep', 'Keep Excalidraw radius'],
+      ['drawio', 'draw.io rounded when rounded'],
+      ['square', 'Always square'],
+      ['round', 'Always rounded']
+    ]},
+    { key: 'sketch', label: 'Hand-drawn (sketch)', choices: [
+      ['keep', 'Keep (from roughness / fill style)'],
+      ['on', 'Always sketch'],
+      ['off', 'Never sketch']
+    ]},
+    { key: 'font', label: 'Fonts', choices: [
+      ['keep', 'Closest to Excalidraw fonts'],
+      ['default', 'draw.io default (Helvetica)']
+    ]},
+    { key: 'strokeWidth', label: 'Stroke width', choices: [
+      ['keep', 'Keep Excalidraw width'],
+      ['default', 'draw.io default (1)']
+    ]},
+    { key: 'strokeStyle', label: 'Dashed / dotted', choices: [
+      ['keep', 'Keep'],
+      ['solid', 'Always solid']
+    ]},
+    { key: 'arrowheads', label: 'Arrowheads', choices: [
+      ['keep', 'Closest to Excalidraw'],
+      ['drawio', 'draw.io classic arrow']
+    ]},
+    { key: 'edgeShape', label: 'Lines', choices: [
+      ['filled', 'Filled edge'],
+      ['standard', 'Standard connector']
+    ]},
+    { key: 'opacity', label: 'Opacity', choices: [
+      ['keep', 'Keep'],
+      ['ignore', 'Ignore (fully opaque)']
+    ]},
+    { key: 'frames', label: 'Frames', choices: [
+      ['excalidraw', 'Excalidraw-like frame'],
+      ['swimlane', 'draw.io container (swimlane)']
+    ]},
+    { key: 'canvas', label: 'Canvas', choices: [
+      ['keep', 'Keep background & grid'],
+      ['default', 'draw.io default']
+    ]}
+  ];
+
+  const PRESETS = {
+    excalidraw: {
+      colors: 'keep', transparentFill: 'keep', roundness: 'keep', sketch: 'keep',
+      font: 'keep', strokeWidth: 'keep', strokeStyle: 'keep', arrowheads: 'keep',
+      edgeShape: 'filled', opacity: 'keep', frames: 'excalidraw', canvas: 'keep'
+    },
+    drawio: {
+      colors: 'palette', transparentFill: 'white', roundness: 'drawio', sketch: 'off',
+      font: 'default', strokeWidth: 'default', strokeStyle: 'keep', arrowheads: 'drawio',
+      edgeShape: 'standard', opacity: 'keep', frames: 'swimlane', canvas: 'default'
+    }
+  };
+
+  // Accepts undefined, a preset name ("drawio") or { preset, ...overrides }
+  function resolveOptions(options){
+    if(typeof options === 'string') options = { preset: options };
+    options = options || {};
+    const base = PRESETS[options.preset] || PRESETS.excalidraw;
+    const opts = Object.assign({}, base);
+    for(const def of OPTION_DEFS){
+      const v = options[def.key];
+      if(v != null && def.choices.some(c => c[0] === v)) opts[def.key] = v;
+    }
+    return opts;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Colors
+  // ---------------------------------------------------------------------------
+
+  // draw.io's standard style palette (fill / stroke pairs)
+  const DRAWIO_PALETTE = {
+    gray:   { fill: '#f5f5f5', stroke: '#666666' },
+    blue:   { fill: '#dae8fc', stroke: '#6c8ebf' },
+    green:  { fill: '#d5e8d4', stroke: '#82b366' },
+    orange: { fill: '#ffe6cc', stroke: '#d79b00' },
+    yellow: { fill: '#fff2cc', stroke: '#d6b656' },
+    red:    { fill: '#f8cecc', stroke: '#b85450' },
+    purple: { fill: '#e1d5e7', stroke: '#9673a6' }
+  };
+
+  function parseHex(color){
+    if(typeof color !== 'string') return null;
+    const m = color.trim().match(/^#([0-9a-f]{3,8})$/i);
+    if(!m) return null;
+    let h = m[1];
+    if(h.length === 3 || h.length === 4) h = h.split('').map(c => c + c).join('');
+    if(h.length !== 6 && h.length !== 8) return null;
+    return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+  }
+
+  // Classify a color into a draw.io palette family, or 'black' / 'white'
+  function colorFamily(color){
+    const rgb = parseHex(color);
+    if(!rgb) return 'black';
+    const [r, g, b] = rgb;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const d = max - min;
+    const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    if(l < 0.22) return 'black';
+    if(l > 0.95 && s < 0.5) return 'white';
+    if(s < 0.15) return 'gray';
+    let hue;
+    if(max === r) hue = ((g - b) / d) % 6;
+    else if(max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+    hue = (hue * 60 + 360) % 360;
+    if(hue < 15 || hue >= 335) return 'red';
+    if(hue < 40) return 'orange';
+    if(hue < 70) return 'yellow';
+    if(hue < 170) return 'green';
+    if(hue < 250) return 'blue';
+    return 'purple';
+  }
+
+  // Returns { stroke, fill, font }: a color string, 'none' (transparent) or
+  // null (omit and let draw.io apply its default).
+  function resolveColors(el, opts){
+    const rawStroke = el.strokeColor || '#000000';
+    const hasBg = el.backgroundColor && el.backgroundColor !== 'transparent';
+    const transparent = opts.transparentFill === 'white' ? null : 'none';
+    if(opts.colors === 'default'){
+      return { stroke: null, fill: hasBg ? null : transparent, font: null };
+    }
+    if(opts.colors === 'palette'){
+      const sFam = colorFamily(rawStroke);
+      const bFam = hasBg ? colorFamily(el.backgroundColor) : null;
+      const fillFam = (bFam && DRAWIO_PALETTE[bFam]) ? bFam : null;
+      let fill;
+      if(fillFam) fill = DRAWIO_PALETTE[fillFam].fill;
+      else if(bFam === 'white') fill = null;
+      else if(bFam === 'black') fill = '#333333';
+      else fill = transparent;
+      let stroke;
+      if(sFam === 'black') stroke = fillFam ? DRAWIO_PALETTE[fillFam].stroke : null;
+      else if(sFam === 'white') stroke = '#ffffff';
+      else stroke = DRAWIO_PALETTE[sFam].stroke;
+      let font;
+      if(sFam === 'black') font = null;
+      else if(sFam === 'white') font = '#ffffff';
+      else font = DRAWIO_PALETTE[sFam].stroke;
+      return { stroke, fill, font };
+    }
+    return { stroke: rawStroke, fill: hasBg ? el.backgroundColor : transparent, font: rawStroke };
+  }
+
+  function colorParts(colors){
+    const parts = [];
+    if(colors.fill) parts.push(`fillColor=${colors.fill}`);
+    if(colors.stroke) parts.push(`strokeColor=${colors.stroke}`);
+    return parts;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shared style pieces
+  // ---------------------------------------------------------------------------
 
   function encodeXml(text){
     return String(text)
@@ -20,23 +204,82 @@
       .replace(/'/g,'&apos;');
   }
 
-  function styleForElement(el, extra){
-    const stroke = el.strokeColor || '#000000';
-    const fill = (el.backgroundColor && el.backgroundColor !== 'transparent') ? el.backgroundColor : 'none';
-    const strokeWidth = Math.max(1, Math.round(el.strokeWidth || 1));
-    let shape = 'rect'; // use "rect" to allow arcSize
+  function strokeWidthParts(el, opts){
+    if(opts.strokeWidth === 'default') return [];
+    return [`strokeWidth=${Math.max(1, Math.round(el.strokeWidth || 1))}`];
+  }
+
+  function dashParts(el, opts){
+    if(opts.strokeStyle === 'solid') return [];
+    if(el.strokeStyle === 'dashed') return ['dashed=1'];
+    if(el.strokeStyle === 'dotted') return ['dashed=1', 'dashPattern=2 2'];
+    return [];
+  }
+
+  function opacityParts(el, opts){
+    if(opts.opacity === 'ignore') return [];
+    if(typeof el.opacity === 'number' && el.opacity !== 100){
+      return [`opacity=${Number(el.opacity).toFixed(1)}`];
+    }
+    return [];
+  }
+
+  function rotationParts(el){
+    if(!el.angle) return [];
+    return [`rotation=${(el.angle * 180 / Math.PI) % 360}`];
+  }
+
+  function sketchParts(el, opts, withFill){
+    let on;
+    if(opts.sketch === 'on') on = true;
+    else if(opts.sketch === 'off') on = false;
+    // Hand-drawn feel: draw.io supports sketch=1; we add it for hachure/cross-hatch or higher roughness.
+    else on = ['hachure','cross-hatch','zigzag'].includes(el.fillStyle) || (typeof el.roughness === 'number' && el.roughness > 1);
+    if(!on) return [];
+    const parts = ['sketch=1'];
+    // optional: tweak factor (draw.io: sketchFactor default 0.5) map roughness ~ [0,2]
+    if(typeof el.roughness === 'number'){
+      parts.push(`sketchFactor=${Math.min(2, Math.max(0.1, el.roughness / 2)).toFixed(2)}`);
+    }
+    // draw.io's sketch renderer (rough.js) understands the same fill styles as Excalidraw
+    if(withFill && ['hachure','cross-hatch','zigzag','solid'].includes(el.fillStyle)){
+      parts.push(`fillStyle=${el.fillStyle}`);
+    }
+    return parts;
+  }
+
+  // Excalidraw corner radius (see getCornerRadius in Excalidraw's math utils)
+  function excalidrawCornerRadius(el){
+    const x = Math.min(el.width || 0, el.height || 0);
+    const type = el.roundness && el.roundness.type;
+    if(type === 3){
+      const fixed = (el.roundness.value != null) ? el.roundness.value : 32;
+      return x <= fixed / 0.25 ? x * 0.25 : fixed;
+    }
+    return x * 0.25; // legacy (1) and proportional (2)
+  }
+
+  function roundnessParts(el, opts){
+    if(!['rectangle','diamond'].includes(el.type)) return [];
+    const isRounded = !!(el.roundness && el.roundness.type > 0);
+    switch(opts.roundness){
+      case 'square': return [];
+      case 'round': return ['rounded=1'];
+      case 'drawio': return isRounded ? ['rounded=1'] : [];
+      default:
+        if(!isRounded) return [];
+        // absoluteArcSize: arcSize is the corner diameter in px
+        return ['rounded=1', 'absoluteArcSize=1', `arcSize=${Math.round(excalidrawCornerRadius(el) * 2)}`];
+    }
+  }
+
+  function styleForElement(el, opts, extra){
+    let shape = 'rect';
     if(el.type === 'ellipse') shape = 'ellipse';
     else if(el.type === 'diamond') shape = 'rhombus';
     else if(el.type === 'freedraw') shape = 'process'; // generic fallback
     else if(el.type === 'image') shape = 'image';
 
-    // Roundness & arc
-    let rounded = 0; let arcSize = 0;
-    if(el.type === 'rectangle' && el.roundness && el.roundness.type > 0){
-      rounded = 1; arcSize = 15; // heuristic; could map based on type
-    }
-
-    // Build base style array
     const parts = [];
     // If extra already sets shape=image (freedraw/image override) don't duplicate base shape
     if(!(extra && /(^|;)shape=image(;|$)/.test(extra))){
@@ -44,78 +287,76 @@
     }
     if(shape === 'ellipse') parts.push('perimeter=ellipsePerimeter');
     if(shape === 'rhombus') parts.push('perimeter=rhombusPerimeter');
-    if(rounded){
-      parts.push('rounded=1');
-      parts.push('absoluteArcSize=1');
-      parts.push(`arcSize=${arcSize}`);
-    }
-
-    // Fill & stroke
-    if(fill === 'none') parts.push('fillColor=none'); else parts.push(`fillColor=${fill}`);
-    parts.push(`strokeColor=${stroke}`);
-    parts.push(`strokeWidth=${strokeWidth}`);
-
-    // Dashing (strokeStyle) & hachure approximations
-    if(el.strokeStyle === 'dashed') parts.push('dashed=1');
-    else if(el.strokeStyle === 'dotted') parts.push('dashed=1;dashPattern=2 2');
-
-    // Hand-drawn feel: draw.io supports sketch=1; we add it for hachure/cross-hatch or higher roughness.
-    if(['hachure','cross-hatch'].includes(el.fillStyle) || (typeof el.roughness === 'number' && el.roughness > 1)){
-      parts.push('sketch=1');
-      // optional: tweak factor (draw.io: sketchFactor default 0.5) map roughness ~ [0,2]
-      if(typeof el.roughness === 'number'){
-        const factor = Math.min(2, Math.max(0.1, el.roughness / 2)).toFixed(2);
-        parts.push(`sketchFactor=${factor}`);
-      }
-    }
-
-    // Opacity (draw.io expects 0-100, can be decimal)
-    if(typeof el.opacity === 'number' && el.opacity !== 100){
-      parts.push(`opacity=${Number(el.opacity).toFixed(1)}`);
-    }
-
-    // Rotation
-    if(el.angle){
-      const deg = (el.angle * 180 / Math.PI) % 360;
-      parts.push(`rotation=${deg}`);
-    }
-
+    parts.push(...roundnessParts(el, opts));
+    parts.push(...colorParts(resolveColors(el, opts)));
+    parts.push(...strokeWidthParts(el, opts));
+    parts.push(...dashParts(el, opts));
+    if(el.type !== 'image') parts.push(...sketchParts(el, opts, true));
+    parts.push(...opacityParts(el, opts));
+    parts.push(...rotationParts(el));
     // Text handled separately by styleForTextElement
-
     if(extra) parts.push(extra);
     return parts.join(';');
   }
 
-  function mapFontFamily(code){
-    // Extend mapping beyond simplistic earlier approach
+  // ---------------------------------------------------------------------------
+  // Fonts
+  // ---------------------------------------------------------------------------
+
+  function googleFont(name){
+    return { family: name, source: encodeURIComponent('https://fonts.googleapis.com/css?family=' + name.replace(/ /g, '+')) };
+  }
+
+  function mapFont(code, opts){
+    if(opts.font === 'default') return { family: 'Helvetica' };
+    // Excalidraw FONT_FAMILY ids
     switch(code){
-      case 1: return 'Helvetica';
-      case 2: return 'Times New Roman';
-      case 3: return 'Courier New';
-      case 5: return 'Comic Sans MS';
-      case 6: return 'Helvetica';
-      case 7: return 'Georgia';
-      case 8: return 'Courier New'; // assume code 8 = code font
-      default: return 'Helvetica';
+      case 1: // Virgil
+      case 5: // Excalifont
+        return googleFont('Architects Daughter'); // draw.io's own hand-drawn font
+      case 3: // Cascadia
+      case 8: // Comic Shanns
+        return { family: 'Courier New' };
+      case 6: return googleFont('Nunito');
+      case 7: return googleFont('Lilita One');
+      case 2: // Helvetica
+      case 4: // Liberation Sans
+      default: return { family: 'Helvetica' };
     }
+  }
+
+  function fontFamilyParts(el, opts){
+    if(!el.fontFamily && opts.font !== 'default') return [];
+    const f = mapFont(el.fontFamily, opts);
+    const parts = [`fontFamily=${f.family}`];
+    if(f.source) parts.push(`fontSource=${f.source}`);
+    return parts;
   }
 
   // Slight downscale to reduce text size so it fits boxes closer to original Excalidraw rendering.
   const FONT_SCALE = 0.90;
   function scaleFont(size){ return Math.max(4, Math.round(size * FONT_SCALE)); }
 
-  function mapArrow(head){
+  // ---------------------------------------------------------------------------
+  // Lines & arrows
+  // ---------------------------------------------------------------------------
+
+  function mapArrow(head, opts){
     // Returns object {shape, fill} where fill is 1 or 0 for start/endFill flags.
     switch(head){
-      case 'arrow': // default arrow in Excalidraw (hollow or filled?). Prefer filled block.
-      case 'triangle':
-        return { shape: 'block', fill: 1 };
+      case 'arrow':
+        return opts.arrowheads === 'drawio' ? { shape: 'classic', fill: 1 } : { shape: 'open', fill: 0 };
+      case 'triangle': return { shape: 'block', fill: 1 };
+      case 'triangle_outline': return { shape: 'block', fill: 0 };
       case 'dot':
-        return { shape: 'oval', fill: 1 };
-      case 'diamond':
-        return { shape: 'diamond', fill: 1 };
-      case 'bar': // no direct bar, approximate with a short dash (draw.io lacks bar arrowhead). Use open for visibility.
-        return { shape: 'open', fill: 0 };
+      case 'circle': return { shape: 'oval', fill: 1 };
+      case 'circle_outline': return { shape: 'oval', fill: 0 };
+      case 'diamond': return { shape: 'diamond', fill: 1 };
+      case 'diamond_outline': return { shape: 'diamond', fill: 0 };
+      case 'bar': return { shape: 'dash', fill: 0 };
+      case 'crowfoot_one': return { shape: 'ERone', fill: 0 };
+      case 'crowfoot_many': return { shape: 'ERmany', fill: 0 };
+      case 'crowfoot_one_or_many': return { shape: 'ERoneToMany', fill: 0 };
       case 'none':
       case undefined:
       case null:
@@ -124,6 +365,85 @@
         return { shape: 'open', fill: 0 };
     }
   }
+
+  function lineStyle(el, opts){
+    let endHead = el.endArrowhead !== undefined ? el.endArrowhead : el.arrowhead;
+    // Old files omit the field; Excalidraw restores arrows with an "arrow" end
+    if(endHead === undefined && el.type === 'arrow') endHead = 'arrow';
+    const startArrowObj = mapArrow(el.startArrowhead, opts);
+    const endArrowObj = mapArrow(endHead, opts);
+    const colors = resolveColors(el, opts);
+
+    // Excalidraw lines with roundness are curved; elbow arrows are orthogonal
+    const multiPoint = el.points && el.points.length > 2;
+    const isCurved = multiPoint && !el.elbowed && (el.curve === true || el.isCurve === true || !!(el.roundness && el.roundness.type));
+
+    const arr = [];
+    if(opts.edgeShape === 'filled') arr.push('shape=filledEdge');
+    arr.push('html=1');
+    arr.push(...strokeWidthParts(el, opts));
+    if(colors.stroke) arr.push(`strokeColor=${colors.stroke}`);
+    if(opts.edgeShape === 'filled') arr.push('fillColor=none');
+    arr.push(`startArrow=${startArrowObj.shape}`);
+    arr.push(`startFill=${startArrowObj.fill}`);
+    arr.push(`endArrow=${endArrowObj.shape}`);
+    arr.push(`endFill=${endArrowObj.fill}`);
+    if(opts.arrowheads === 'keep'){
+      arr.push('startSize=6');
+      arr.push('endSize=6');
+    }
+    let curved = false, rounded = false;
+    switch(opts.roundness){
+      case 'square': break;
+      case 'round': rounded = true; break;
+      default: curved = isCurved;
+    }
+    if(curved){
+      arr.push('edgeStyle=none'); // don't orthogonally route
+      arr.push('curved=1');
+    }
+    arr.push(`rounded=${rounded ? 1 : 0}`);
+    arr.push(...dashParts(el, opts));
+    arr.push('fixDash=1');
+    arr.push(...sketchParts(el, opts, false));
+    arr.push(...opacityParts(el, opts));
+    return arr.join(';');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Frames
+  // ---------------------------------------------------------------------------
+
+  const FRAME_TYPES = ['frame','magicframe'];
+  const SWIMLANE_HEADER = 26;
+
+  function frameStyle(el, opts){
+    if(opts.frames === 'swimlane'){
+      // draw.io's canonical container; header sits above the frame contents
+      return ['swimlane','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0',`startSize=${SWIMLANE_HEADER}`]
+        .concat(opacityParts(el, opts)).join(';');
+    }
+    // Excalidraw frames: thin grey border, transparent body, name above the top-left corner
+    const parts = ['rounded=0','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0'];
+    const stroke = (el.strokeColor && el.strokeColor !== '#000000' && el.strokeColor !== 'transparent') ? el.strokeColor : '#bbbbbb';
+    parts.push(`strokeColor=${stroke}`);
+    parts.push((el.backgroundColor && el.backgroundColor !== 'transparent') ? `fillColor=${el.backgroundColor}` : 'fillColor=none');
+    parts.push('strokeWidth=1');
+    parts.push('align=left');
+    parts.push('verticalAlign=bottom');
+    parts.push('labelPosition=center');
+    parts.push('verticalLabelPosition=top');
+    parts.push('spacingLeft=0');
+    parts.push('spacingBottom=2');
+    parts.push('fontSize=14');
+    parts.push('fontColor=#999999');
+    parts.push(...opacityParts(el, opts));
+    return parts.join(';');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Images
+  // ---------------------------------------------------------------------------
 
   function resolveImageDataURL(data, el){
     if(!data.files || !el.fileId) return null;
@@ -147,47 +467,19 @@
     return url.replace(/^(data:image\/(?:png|jpeg|jpg|gif|webp|svg\+xml));base64,/i, '$1,');
   }
 
-  function lineStyle(el){
-    const stroke = el.strokeColor || '#000000';
-    const strokeWidth = Math.max(1, Math.round(el.strokeWidth || 1));
-    const dash = el.strokeStyle === 'dashed' ? 'dashed=1' : (el.strokeStyle === 'dotted' ? 'dashed=1;dashPattern=2 2' : '');
-    const startArrowObj = mapArrow(el.startArrowhead);
-    const endArrowObj = mapArrow(el.endArrowhead || el.arrowhead);
-    // Heuristic curved detection: multi-point + explicit curve flags or roundness
-    let curved = false;
-    if(el.points && el.points.length > 3){
-      if(el.curve === true || el.isCurve === true) curved = true;
-      else if(el.roundness && (el.roundness.type >= 2 || el.roundness.type === 'curve')) curved = true;
-      // fallback: if any point is not collinear we could also mark curved, but keep simple for now
-    }
-    const arr = [ 'shape=filledEdge' ];
-    arr.push(`strokeWidth=${strokeWidth}`);
-    arr.push(`strokeColor=${stroke}`);
-    arr.push('fillColor=none');
-  arr.push(`startArrow=${startArrowObj.shape}`);
-  arr.push(`startFill=${startArrowObj.fill}`);
-    arr.push('startSize=6');
-  arr.push(`endArrow=${endArrowObj.shape}`);
-  arr.push(`endFill=${endArrowObj.fill}`);
-    arr.push('endSize=6');
-    if(curved){
-      arr.push('edgeStyle=none'); // don't orthogonally route
-      arr.push('curved=1');
-    }
-    else{
-      arr.push('rounded=1');
-   }
-    if(dash) arr.push(dash + ';fixDash=1'); else arr.push('fixDash=1');
-    return arr.join(';');
-  }
+  // ---------------------------------------------------------------------------
+  // Conversion
+  // ---------------------------------------------------------------------------
 
-  function convert(excalidata){
+  function convert(excalidata, options){
     const data = (typeof excalidata === 'string') ? JSON.parse(excalidata) : excalidata;
+    const opts = resolveOptions(options);
     const elements = data.elements || [];
+    const appState = data.appState || {};
 
     // Compute bounding box offsets so we don't get negative coords
     let minX = 0, minY = 0;
-  for(const el of elements){
+    for(const el of elements){
       if(el.x < minX) minX = el.x;
       if(el.y < minY) minY = el.y;
     }
@@ -199,6 +491,17 @@
     const cellObjs = [];
     const elementToCell = {}; // excalidraw element id -> mx cell id
     const deferredText = [];  // store text elements for second pass
+    const frameOrigins = {};  // excalidraw frame id -> origin of its children (page coords)
+
+    // Resolve the parent cell for an element: its frame container (with
+    // coordinates relative to the frame) or the default layer.
+    function placement(el){
+      const origin = el.frameId && frameOrigins[el.frameId];
+      if(origin && elementToCell[el.frameId]){
+        return { parent: elementToCell[el.frameId], dx: origin.x, dy: origin.y };
+      }
+      return { parent: '1', dx: 0, dy: 0 };
+    }
 
     // Helper to push a vertex
     function addVertex(el, style, value, parentId, x, y, w, h){
@@ -208,15 +511,29 @@
       return id;
     }
     // Helper to push edge
-    function addEdge(el, style, value, sourcePoint, targetPoint){
+    function addEdge(el, style, value, sourcePoint, targetPoint, parentId){
       const id = nextId();
-      cellObjs.push({ id, value: value||'', style, edge:1, parent:'1', sourcePoint, targetPoint });
+      cellObjs.push({ id, value: value||'', style, edge:1, parent: parentId||'1', sourcePoint, targetPoint });
       elementToCell[el.id] = id;
       return id;
     }
 
+    // Frames first so containers exist (and render behind) before their children
     for(const el of elements){
-      if(el.isDeleted) continue;
+      if(el.isDeleted || !FRAME_TYPES.includes(el.type)) continue;
+      const x = (el.x - minX) || 0;
+      const y = (el.y - minY) || 0;
+      const w = Math.max(1, Math.round(el.width || 100));
+      const h = Math.max(1, Math.round(el.height || 100));
+      const name = el.name != null ? el.name : (el.type === 'magicframe' ? 'AI Frame' : 'Frame');
+      // A swimlane's header is part of the cell, so grow it upwards to keep contents in place
+      const header = opts.frames === 'swimlane' ? SWIMLANE_HEADER : 0;
+      frameOrigins[el.id] = { x, y: y - header };
+      addVertex(el, frameStyle(el, opts), encodeXml(name), '1', x, y - header, w, h + header);
+    }
+
+    for(const el of elements){
+      if(el.isDeleted || FRAME_TYPES.includes(el.type)) continue;
       if(el.type === 'text'){
         // process later (to attach to container / edge if needed)
         deferredText.push(el);
@@ -239,7 +556,7 @@
         }
         let geomX = x, geomY = y, geomW = w, geomH = h;
         if(el.type === 'freedraw'){
-          const payload = freedrawImagePayload(el);
+          const payload = freedrawImagePayload(el, opts);
           if(payload){
             extraStyle = 'shape=image;image=' + payload.dataUri;
             // adjust geometry to bounding box top-left (x + minX/minY) if offsets differ
@@ -248,10 +565,11 @@
             geomW = payload.width; geomH = payload.height;
           }
         }
-        const style = styleForElement(el, extraStyle);
-        addVertex(el, style, '', '1', geomX, geomY, geomW, geomH);
+        const style = styleForElement(el, opts, extraStyle);
+        const pl = placement(el);
+        addVertex(el, style, '', pl.parent, geomX - pl.dx, geomY - pl.dy, geomW, geomH);
       } else if(['line','arrow'].includes(el.type)){
-        const style = lineStyle(el);
+        const style = lineStyle(el, opts);
         let x1 = el.x, y1 = el.y;
         let x2 = el.x + (el.width || 0), y2 = el.y + (el.height || 0);
         let waypoints = [];
@@ -266,8 +584,11 @@
             }
           }
         }
-        x1 -= minX; y1 -= minY; x2 -= minX; y2 -= minY;
-        const edgeId = addEdge(el, style, '', {x:x1,y:y1}, {x:x2,y:y2});
+        // Edge geometry is expressed in its parent's coordinate space
+        const pl = placement(el);
+        x1 -= minX + pl.dx; y1 -= minY + pl.dy; x2 -= minX + pl.dx; y2 -= minY + pl.dy;
+        for(const wp of waypoints){ wp.x -= pl.dx; wp.y -= pl.dy; }
+        const edgeId = addEdge(el, style, '', {x:x1,y:y1}, {x:x2,y:y2}, pl.parent);
         if(waypoints.length){
           const edgeObj = cellObjs.find(c => c.id === edgeId);
           if(edgeObj) edgeObj.points = waypoints; // store for serialization
@@ -278,7 +599,8 @@
     // Second pass: text elements
     for(const el of deferredText){
       const rawValue = buildPlainTextValue(el); // simpler value (preserve line breaks & special chars)
-      const style = styleForTextElement(el);
+      const style = styleForTextElement(el, opts);
+      const fontColor = resolveColors(el, opts).font;
       const w = Math.max(1, Math.round(el.width || (el.fontSize?el.fontSize*6:100)));
       const h = Math.max(1, Math.round(el.height || (el.fontSize?el.fontSize*1.2:40)));
       const x = (el.x - minX) || 0;
@@ -298,7 +620,8 @@
               // Add font styling if absent
               const edgeAdditions = [];
               if(el.fontSize && !/fontSize=/.test(edgeObj.style)) edgeAdditions.push(`fontSize=${scaleFont(el.fontSize)}`);
-              if(el.fontFamily && !/fontFamily=/.test(edgeObj.style)) edgeAdditions.push(`fontFamily=${mapFontFamily(el.fontFamily)}`);
+              if(!/fontFamily=/.test(edgeObj.style)) edgeAdditions.push(...fontFamilyParts(el, opts));
+              if(fontColor && !/fontColor=/.test(edgeObj.style)) edgeAdditions.push(`fontColor=${fontColor}`);
               if(edgeAdditions.length) edgeObj.style += ';' + edgeAdditions.join(';');
             }
             continue;
@@ -308,7 +631,7 @@
           const parentObj = cellObjs.find(c => c.id === parentCellId);
           if(parentObj){
             // Build richer HTML value using container width, not auto-resized text width
-            const htmlValue = buildContainerTextValue(el, Math.round(containerEl.width || w));
+            const htmlValue = buildContainerTextValue(el, Math.round(containerEl.width || w), fontColor);
             parentObj.value = htmlValue;
             // Augment style with text properties
             const additions = [];
@@ -318,9 +641,9 @@
             const vAlign = el.verticalAlign === 'middle' ? 'middle' : (el.verticalAlign === 'bottom' ? 'bottom' : 'top');
             if(!/verticalAlign=/.test(parentObj.style)) additions.push(`verticalAlign=${vAlign}`);
             if(el.fontSize && !/fontSize=/.test(parentObj.style)) additions.push(`fontSize=${Math.round(el.fontSize)}`);
-            if(el.fontFamily && !/fontFamily=/.test(parentObj.style)) additions.push(`fontFamily=${mapFontFamily(el.fontFamily)}`);
+            if(!/fontFamily=/.test(parentObj.style)) additions.push(...fontFamilyParts(el, opts));
+            if(fontColor && !/fontColor=/.test(parentObj.style)) additions.push(`fontColor=${fontColor}`);
             if(!/whiteSpace=/.test(parentObj.style)) additions.push('whiteSpace=wrap');
-            // ensure text color approximated via strokeColor (already present) so skip explicit
             if(additions.length) parentObj.style += ';' + additions.join(';');
           }
           continue;
@@ -330,8 +653,9 @@
         const relY = el.y - (containerEl ? containerEl.y : 0);
         addVertex(el, style, rawValue, parentCellId, relX, relY, w, h);
       } else {
-        // standalone text
-        addVertex(el, style, rawValue, '1', x, y, w, h);
+        // standalone text (possibly inside a frame)
+        const pl = placement(el);
+        addVertex(el, style, rawValue, pl.parent, x - pl.dx, y - pl.dy, w, h);
       }
     }
 
@@ -350,13 +674,23 @@
       return '';
     });
 
+    // Canvas: Excalidraw background color & grid, or draw.io defaults
+    let grid = 1, gridSize = 10, background = '';
+    if(opts.canvas === 'keep'){
+      const gridOn = appState.gridModeEnabled != null ? !!appState.gridModeEnabled : !!appState.gridSize;
+      grid = gridOn ? 1 : 0;
+      if(appState.gridSize) gridSize = appState.gridSize;
+      const bg = appState.viewBackgroundColor;
+      if(bg && bg !== 'transparent' && !/^#f{3}(f{3})?$/i.test(bg)) background = ` background="${encodeXml(bg)}"`;
+    }
+
     const diagramName = 'Page-1';
     // Pretty-print with 2-space indentation
     const IND = '  ';
     const lines = [];
     lines.push(`<mxfile host="app.diagrams.net" modified="${new Date().toISOString()}" agent="excalidraw-converter" version="20.6.3" type="device">`);
     lines.push(`${IND}<diagram id="d1" name="${diagramName}">`);
-    lines.push(`${IND}${IND}<mxGraphModel dx="1024" dy="1024" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">`);
+    lines.push(`${IND}${IND}<mxGraphModel dx="1024" dy="1024" grid="${grid}" gridSize="${gridSize}" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0"${background}>`);
     lines.push(`${IND}${IND}${IND}<root>`);
     for(const c of rootXml){ lines.push(`${IND}${IND}${IND}${IND}${c}`); }
     for(const c of cellXml){ lines.push(`${IND}${IND}${IND}${IND}${c}`); }
@@ -367,24 +701,16 @@
     return lines.join('\n');
   }
 
-  function buildTextValue(el){
-    const raw = el.text || '';
-    const lines = raw.split(/\n/).map(l => encodeXml(l));
-    const align = el.textAlign || 'left';
-    const fontSize = scaleFont(el.fontSize || 16);
-    const color = el.strokeColor || '#000000';
-    const outerWidth = (el.width || (fontSize * 6)).toFixed(3);
-    return `<div style="width: ${outerWidth}px;height:auto;word-break: break-word;line-height:1em;"><div align="${align}"><span style="font-size: ${fontSize}px; line-height: 0;"><span style="line-height: 0;"><span style="color: ${color}; font-size: ${fontSize}px; line-height: 16.5px;">${lines.join('<br>')}</span><br></span></span></div></div>`;
-  }
-
-  function styleForTextElement(el){
+  function styleForTextElement(el, opts){
     const parts = ['text','html=1','nl2Br=0'];
     const align = el.textAlign || 'left';
     const vAlign = el.verticalAlign === 'middle' ? 'middle' : (el.verticalAlign === 'bottom' ? 'bottom' : 'top');
     parts.push(`align=${align}`);
     parts.push(`verticalAlign=${vAlign}`);
     if(el.fontSize) parts.push(`fontSize=${scaleFont(el.fontSize)}`);
-    if(el.fontFamily) parts.push(`fontFamily=${mapFontFamily(el.fontFamily)}`);
+    parts.push(...fontFamilyParts(el, opts));
+    const fontColor = resolveColors(el, opts).font;
+    if(fontColor) parts.push(`fontColor=${fontColor}`);
     parts.push('spacingLeft=0');
     parts.push('spacingRight=0');
     parts.push('spacingTop=0');
@@ -392,13 +718,8 @@
     parts.push('whiteSpace=wrap');
     parts.push('strokeColor=none');
     parts.push('fillColor=none');
-    if(el.angle){
-      const deg = (el.angle * 180 / Math.PI) % 360;
-      parts.push(`rotation=${deg}`);
-    }
-    if(typeof el.opacity === 'number' && el.opacity !== 100){
-      parts.push(`opacity=${Number(el.opacity).toFixed(1)}`);
-    }
+    parts.push(...rotationParts(el));
+    parts.push(...opacityParts(el, opts));
     return parts.join(';');
   }
 
@@ -408,17 +729,17 @@
     return raw.split(/\n/).map(line => encodeXml(line)).join('<br>');
   }
 
-  function buildContainerTextValue(el, containerWidth){
+  function buildContainerTextValue(el, containerWidth, color){
     const raw = el.text || '';
     const lines = raw.split(/\n/).map(l => encodeXml(l));
     const align = el.textAlign || 'left';
     const fontSize = scaleFont(el.fontSize || 16);
-    const color = el.strokeColor || '#000000';
+    const colorCss = color ? `color: ${color}; ` : '';
     const outerWidth = (containerWidth || fontSize * 6).toFixed(1);
-    return `<div style="width: ${outerWidth}px;height:auto;word-break: break-word;line-height:1em;"><div align="${align}"><span style="font-size: ${fontSize}px; line-height: 0;"><span style="line-height: 0;"><span style="color: ${color}; font-size: ${fontSize}px; line-height: 16.5px;">${lines.join('<br>')}</span><br></span></span></div></div>`;
+    return `<div style="width: ${outerWidth}px;height:auto;word-break: break-word;line-height:1em;"><div align="${align}"><span style="font-size: ${fontSize}px; line-height: 0;"><span style="line-height: 0;"><span style="${colorCss}font-size: ${fontSize}px; line-height: 16.5px;">${lines.join('<br>')}</span><br></span></span></div></div>`;
   }
 
-  function freedrawImagePayload(el){
+  function freedrawImagePayload(el, opts){
     if(!el.points || el.points.length === 0) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for(const [px,py] of el.points){
@@ -430,17 +751,24 @@
     const normPts = el.points.map(([px,py]) => [px - minX, py - minY]);
     const width = Math.max(1, Math.round(maxX - minX));
     const height = Math.max(1, Math.round(maxY - minY));
-    const stroke = el.strokeColor || '#000000';
-    const strokeWidth = Math.max(1, Math.round(el.strokeWidth || 1));
-    const hasFill = el.backgroundColor && el.backgroundColor !== 'transparent';
-    const fillColor = hasFill ? el.backgroundColor : 'none';
+    const colors = resolveColors(el, opts);
+    const stroke = colors.stroke || '#000000';
+    const strokeWidth = opts.strokeWidth === 'default' ? 1 : Math.max(1, Math.round(el.strokeWidth || 1));
+    const hasFill = el.backgroundColor && el.backgroundColor !== 'transparent' && colors.fill && colors.fill !== 'none';
+    const fillColor = hasFill ? colors.fill : 'none';
     const isClosed = el.points.length > 2 && Math.abs(el.points[0][0]-el.points[el.points.length-1][0]) < 0.01 && Math.abs(el.points[0][1]-el.points[el.points.length-1][1]) < 0.01;
     const d = normPts.map((p,i)=> (i===0?`M${p[0].toFixed(2)} ${p[1].toFixed(2)}`:`L${p[0].toFixed(2)} ${p[1].toFixed(2)}`)).join(' ') + (isClosed? ' Z':'');
-    const fillOpacity = (typeof el.opacity === 'number' && el.opacity !== 100) ? (el.opacity/100).toFixed(2) : (hasFill ? '1' : '0');
-    const strokeOpacity = (typeof el.opacity === 'number' && el.opacity !== 100) ? (el.opacity/100).toFixed(2) : '1';
+    const translucent = opts.opacity !== 'ignore' && typeof el.opacity === 'number' && el.opacity !== 100;
+    const fillOpacity = translucent ? (el.opacity/100).toFixed(2) : (hasFill ? '1' : '0');
+    const strokeOpacity = translucent ? (el.opacity/100).toFixed(2) : '1';
     const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}' viewBox='0 0 ${width} ${height}'><path d='${d}' stroke='${stroke}' stroke-width='${strokeWidth}' stroke-linecap='round' stroke-linejoin='round' fill='${fillColor}' fill-opacity='${fillOpacity}' stroke-opacity='${strokeOpacity}'/></svg>`;
     return { dataUri: 'data:image/svg+xml,' + encodeURIComponent(svg), offsetX: minX, offsetY: minY, width, height };
   }
 
-  global.ExcDrawio = { convertExcalidrawToDrawio: convert };
+  global.ExcDrawio = {
+    convertExcalidrawToDrawio: convert,
+    OPTION_DEFS,
+    PRESETS,
+    resolveOptions
+  };
 })(window);
