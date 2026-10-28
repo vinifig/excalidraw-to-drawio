@@ -22,6 +22,19 @@
           <button id="sampleBtn" type="button" class="linkish">Load sample</button>
         </div>
 
+        <fieldset class="options">
+          <legend>Output style</legend>
+          <label class="preset">
+            <span>Preset</span>
+            <select id="presetSelect">
+              <option value="excalidraw">Excalidraw look (faithful)</option>
+              <option value="drawio">draw.io default look</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <div id="optionGrid" class="option-grid"></div>
+        </fieldset>
+
         <textarea id="inputText" placeholder="Or paste Excalidraw JSON here..." wrap="off" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
       </section>
 

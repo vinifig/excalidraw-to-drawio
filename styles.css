@@ -14,6 +14,13 @@ section.input .picker { display:flex; flex-wrap:wrap; gap:12px; }
 .file-label:hover { background:linear-gradient(145deg,#24344a,#1b2735); border-color:#3e4d60; }
 .linkish { background:#243244; border:1px solid #334155; color:#60a5fa; cursor:pointer; padding:12px 18px; border-radius:12px; font-size:14px; font-weight:500; }
 .linkish:hover { background:#2d3c50; color:#93c5fd; }
+fieldset.options { margin:14px 0; padding:12px 14px 14px; border:1px solid #334155; border-radius:12px; }
+fieldset.options legend { padding:0 6px; font-size:13px; font-weight:600; color:#cbd5e1; }
+.options label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:#94a3b8; min-width:0; }
+.options label.preset { margin-bottom:12px; max-width:320px; }
+.option-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:10px 14px; }
+.options select { width:100%; padding:8px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; font-size:13px; }
+.options select:focus { outline:2px solid #2563eb; outline-offset:1px; }
 textarea { width:100%; min-height:180px; padding:12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:13px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; resize:vertical; line-height:1.4; white-space:pre; overflow-wrap:normal; }
 textarea:focus { outline:2px solid #2563eb; outline-offset:2px; }
 .actions { display:flex; gap:12px; margin-top:14px; }
