@@ -1,12 +1,14 @@
 // Excalidraw -> draw.io (mxGraph) minimal client-side converter
 // NOTE: This is a heuristic lightweight mapping for common primitive shapes
-// (rectangle, ellipse, diamond, text, line/arrow). Images and freedraw are
+// (rectangle, ellipse, diamond, text, line/arrow, frame). Images and freedraw are
 // embedded as data URIs (images) or paths (simplified) inside a shape.
 // draw.io file format is an XML <mxfile> containing <diagram> with a base64
 // compressed/zlib+base64 encoded mxGraphModel by default. For simplicity
 // here we output a plain (uncompressed) <mxfile><diagram> containing raw
 // mxGraphModel XML; draw.io will still import it.
 // We assign incremental IDs; parent layer is id=0, default layer = 1.
+// Excalidraw frames become draw.io containers; elements with a frameId are
+// nested inside them using coordinates relative to the frame.
 
 (function(global){
   'use strict';
@@ -147,6 +149,29 @@
     return url.replace(/^(data:image\/(?:png|jpeg|jpg|gif|webp|svg\+xml));base64,/i, '$1,');
   }
 
+  const FRAME_TYPES = ['frame','magicframe'];
+
+  function frameStyle(el){
+    // Excalidraw frames: thin grey border, transparent body, name above the top-left corner
+    const parts = ['rounded=0','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0'];
+    const stroke = (el.strokeColor && el.strokeColor !== '#000000' && el.strokeColor !== 'transparent') ? el.strokeColor : '#bbbbbb';
+    parts.push(`strokeColor=${stroke}`);
+    parts.push((el.backgroundColor && el.backgroundColor !== 'transparent') ? `fillColor=${el.backgroundColor}` : 'fillColor=none');
+    parts.push('strokeWidth=1');
+    parts.push('align=left');
+    parts.push('verticalAlign=bottom');
+    parts.push('labelPosition=center');
+    parts.push('verticalLabelPosition=top');
+    parts.push('spacingLeft=0');
+    parts.push('spacingBottom=2');
+    parts.push('fontSize=14');
+    parts.push('fontColor=#999999');
+    if(typeof el.opacity === 'number' && el.opacity !== 100){
+      parts.push(`opacity=${Number(el.opacity).toFixed(1)}`);
+    }
+    return parts.join(';');
+  }
+
   function lineStyle(el){
     const stroke = el.strokeColor || '#000000';
     const strokeWidth = Math.max(1, Math.round(el.strokeWidth || 1));
@@ -199,6 +224,17 @@
     const cellObjs = [];
     const elementToCell = {}; // excalidraw element id -> mx cell id
     const deferredText = [];  // store text elements for second pass
+    const frameEls = {};      // excalidraw frame id -> frame element
+
+    // Resolve the parent cell for an element: its frame container (with
+    // coordinates relative to the frame) or the default layer.
+    function placement(el){
+      const frame = el.frameId && frameEls[el.frameId];
+      if(frame && elementToCell[frame.id]){
+        return { parent: elementToCell[frame.id], dx: frame.x - minX, dy: frame.y - minY };
+      }
+      return { parent: '1', dx: 0, dy: 0 };
+    }
 
     // Helper to push a vertex
     function addVertex(el, style, value, parentId, x, y, w, h){
@@ -208,15 +244,27 @@
       return id;
     }
     // Helper to push edge
-    function addEdge(el, style, value, sourcePoint, targetPoint){
+    function addEdge(el, style, value, sourcePoint, targetPoint, parentId){
       const id = nextId();
-      cellObjs.push({ id, value: value||'', style, edge:1, parent:'1', sourcePoint, targetPoint });
+      cellObjs.push({ id, value: value||'', style, edge:1, parent: parentId||'1', sourcePoint, targetPoint });
       elementToCell[el.id] = id;
       return id;
     }
 
+    // Frames first so containers exist (and render behind) before their children
     for(const el of elements){
-      if(el.isDeleted) continue;
+      if(el.isDeleted || !FRAME_TYPES.includes(el.type)) continue;
+      frameEls[el.id] = el;
+      const x = (el.x - minX) || 0;
+      const y = (el.y - minY) || 0;
+      const w = Math.max(1, Math.round(el.width || 100));
+      const h = Math.max(1, Math.round(el.height || 100));
+      const name = el.name != null ? el.name : (el.type === 'magicframe' ? 'AI Frame' : 'Frame');
+      addVertex(el, frameStyle(el), encodeXml(name), '1', x, y, w, h);
+    }
+
+    for(const el of elements){
+      if(el.isDeleted || FRAME_TYPES.includes(el.type)) continue;
       if(el.type === 'text'){
         // process later (to attach to container / edge if needed)
         deferredText.push(el);
@@ -249,7 +297,8 @@
           }
         }
         const style = styleForElement(el, extraStyle);
-        addVertex(el, style, '', '1', geomX, geomY, geomW, geomH);
+        const pl = placement(el);
+        addVertex(el, style, '', pl.parent, geomX - pl.dx, geomY - pl.dy, geomW, geomH);
       } else if(['line','arrow'].includes(el.type)){
         const style = lineStyle(el);
         let x1 = el.x, y1 = el.y;
@@ -266,8 +315,11 @@
             }
           }
         }
-        x1 -= minX; y1 -= minY; x2 -= minX; y2 -= minY;
-        const edgeId = addEdge(el, style, '', {x:x1,y:y1}, {x:x2,y:y2});
+        // Edge geometry is expressed in its parent's coordinate space
+        const pl = placement(el);
+        x1 -= minX + pl.dx; y1 -= minY + pl.dy; x2 -= minX + pl.dx; y2 -= minY + pl.dy;
+        for(const wp of waypoints){ wp.x -= pl.dx; wp.y -= pl.dy; }
+        const edgeId = addEdge(el, style, '', {x:x1,y:y1}, {x:x2,y:y2}, pl.parent);
         if(waypoints.length){
           const edgeObj = cellObjs.find(c => c.id === edgeId);
           if(edgeObj) edgeObj.points = waypoints; // store for serialization
@@ -330,8 +382,9 @@
         const relY = el.y - (containerEl ? containerEl.y : 0);
         addVertex(el, style, rawValue, parentCellId, relX, relY, w, h);
       } else {
-        // standalone text
-        addVertex(el, style, rawValue, '1', x, y, w, h);
+        // standalone text (possibly inside a frame)
+        const pl = placement(el);
+        addVertex(el, style, rawValue, pl.parent, x - pl.dx, y - pl.dy, w, h);
       }
     }
 
