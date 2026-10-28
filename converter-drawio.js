@@ -13,7 +13,9 @@
 // Styling is driven by conversion options (see OPTION_DEFS / PRESETS):
 // "excalidraw" keeps the original look, "drawio" maps everything to draw.io's
 // default conventions (palette, fonts, square/rounded shapes, swimlanes...),
-// and any single option can be overridden on top of a preset.
+// "flowchart" exports a draw.io flowchart (terminator / process / decision
+// shapes with a fixed color each, connected orthogonal arrows), and any
+// single option can be overridden on top of a preset.
 
 (function(global){
   'use strict';
@@ -23,9 +25,14 @@
   // ---------------------------------------------------------------------------
 
   const OPTION_DEFS = [
+    { key: 'shapes', label: 'Shapes', choices: [
+      ['keep', 'Keep Excalidraw shapes'],
+      ['flowchart', 'Flowchart (ellipse = start/end)']
+    ]},
     { key: 'colors', label: 'Colors', choices: [
       ['keep', 'Keep Excalidraw colors'],
       ['palette', 'Map to draw.io palette'],
+      ['flowchart', 'Fixed color per flowchart shape'],
       ['default', 'draw.io default (no colors)']
     ]},
     { key: 'transparentFill', label: 'Transparent fills', choices: [
@@ -59,6 +66,14 @@
       ['keep', 'Closest to Excalidraw'],
       ['drawio', 'draw.io classic arrow']
     ]},
+    { key: 'connect', label: 'Arrow bindings', choices: [
+      ['free', 'Free-floating arrows'],
+      ['bind', 'Connect arrows to shapes']
+    ]},
+    { key: 'edgeRouting', label: 'Arrow routing', choices: [
+      ['keep', 'Follow Excalidraw points'],
+      ['orthogonal', 'draw.io orthogonal (auto)']
+    ]},
     { key: 'edgeShape', label: 'Lines', choices: [
       ['filled', 'Filled edge'],
       ['standard', 'Standard connector']
@@ -79,14 +94,22 @@
 
   const PRESETS = {
     excalidraw: {
+      shapes: 'keep', connect: 'free', edgeRouting: 'keep',
       colors: 'keep', transparentFill: 'keep', roundness: 'keep', sketch: 'keep',
       font: 'keep', strokeWidth: 'keep', strokeStyle: 'keep', arrowheads: 'keep',
       edgeShape: 'filled', opacity: 'keep', frames: 'excalidraw', canvas: 'keep'
     },
     drawio: {
+      shapes: 'keep', connect: 'bind', edgeRouting: 'keep',
       colors: 'palette', transparentFill: 'white', roundness: 'drawio', sketch: 'off',
       font: 'default', strokeWidth: 'default', strokeStyle: 'keep', arrowheads: 'drawio',
       edgeShape: 'standard', opacity: 'keep', frames: 'swimlane', canvas: 'default'
+    },
+    flowchart: {
+      shapes: 'flowchart', connect: 'bind', edgeRouting: 'orthogonal',
+      colors: 'flowchart', transparentFill: 'white', roundness: 'drawio', sketch: 'off',
+      font: 'default', strokeWidth: 'default', strokeStyle: 'keep', arrowheads: 'drawio',
+      edgeShape: 'standard', opacity: 'ignore', frames: 'swimlane', canvas: 'default'
     }
   };
 
@@ -117,6 +140,33 @@
     red:    { fill: '#f8cecc', stroke: '#b85450' },
     purple: { fill: '#e1d5e7', stroke: '#9673a6' }
   };
+
+  // Fixed colors per flowchart role (draw.io palette)
+  const FLOWCHART_COLORS = {
+    start:    DRAWIO_PALETTE.green,
+    end:      DRAWIO_PALETTE.red,
+    process:  DRAWIO_PALETTE.blue,
+    decision: DRAWIO_PALETTE.yellow
+  };
+
+  // Flowchart role of a shape: ellipses are terminators (start when nothing
+  // points into them, end when nothing leaves them), rectangles are
+  // processes and diamonds are decisions.
+  function flowchartRoles(elements){
+    const incoming = {}, outgoing = {};
+    for(const el of elements){
+      if(el.isDeleted || !['arrow','line'].includes(el.type)) continue;
+      if(el.startBinding && el.startBinding.elementId) outgoing[el.startBinding.elementId] = (outgoing[el.startBinding.elementId] || 0) + 1;
+      if(el.endBinding && el.endBinding.elementId) incoming[el.endBinding.elementId] = (incoming[el.endBinding.elementId] || 0) + 1;
+    }
+    const roles = {};
+    for(const el of elements){
+      if(el.type === 'ellipse') roles[el.id] = (incoming[el.id] && !outgoing[el.id]) ? 'end' : 'start';
+      else if(el.type === 'rectangle') roles[el.id] = 'process';
+      else if(el.type === 'diamond') roles[el.id] = 'decision';
+    }
+    return roles;
+  }
 
   function parseHex(color){
     if(typeof color !== 'string') return null;
@@ -161,6 +211,11 @@
     const transparent = opts.transparentFill === 'white' ? null : 'none';
     if(opts.colors === 'default'){
       return { stroke: null, fill: hasBg ? null : transparent, font: null };
+    }
+    if(opts.colors === 'flowchart'){
+      const pair = FLOWCHART_COLORS[opts.roles[el.id]];
+      if(pair) return { stroke: pair.stroke, fill: pair.fill, font: null };
+      return { stroke: null, fill: transparent, font: null };
     }
     if(opts.colors === 'palette'){
       const sFam = colorFamily(rawStroke);
@@ -275,7 +330,7 @@
 
   function styleForElement(el, opts, extra){
     let shape = 'rect';
-    if(el.type === 'ellipse') shape = 'ellipse';
+    if(el.type === 'ellipse') shape = opts.shapes === 'flowchart' ? 'mxgraph.flowchart.terminator' : 'ellipse';
     else if(el.type === 'diamond') shape = 'rhombus';
     else if(el.type === 'freedraw') shape = 'process'; // generic fallback
     else if(el.type === 'image') shape = 'image';
@@ -287,6 +342,7 @@
     }
     if(shape === 'ellipse') parts.push('perimeter=ellipsePerimeter');
     if(shape === 'rhombus') parts.push('perimeter=rhombusPerimeter');
+    if(opts.shapes === 'flowchart') parts.push('html=1', 'whiteSpace=wrap');
     parts.push(...roundnessParts(el, opts));
     parts.push(...colorParts(resolveColors(el, opts)));
     parts.push(...strokeWidthParts(el, opts));
@@ -398,6 +454,20 @@
       case 'round': rounded = true; break;
       default: curved = isCurved;
     }
+    if(opts.edgeRouting === 'orthogonal'){
+      arr.push('edgeStyle=orthogonalEdgeStyle', 'orthogonalLoop=1', 'jettySize=auto');
+      curved = false;
+    }
+    // Arrows bound to a fixed point of a shape (elbow arrows) keep that anchor
+    if(opts.connect === 'bind'){
+      for(const [binding, prefix] of [[el.startBinding, 'exit'], [el.endBinding, 'entry']]){
+        const fp = binding && binding.fixedPoint;
+        if(Array.isArray(fp) && fp.length === 2){
+          const clamp = v => Math.min(1, Math.max(0, Number(v) || 0)).toFixed(3).replace(/\.?0+$/, '');
+          arr.push(`${prefix}X=${clamp(fp[0])}`, `${prefix}Y=${clamp(fp[1])}`, `${prefix}Dx=0`, `${prefix}Dy=0`);
+        }
+      }
+    }
     if(curved){
       arr.push('edgeStyle=none'); // don't orthogonally route
       arr.push('curved=1');
@@ -420,14 +490,15 @@
   function frameStyle(el, opts){
     if(opts.frames === 'swimlane'){
       // draw.io's canonical container; header sits above the frame contents
-      return ['swimlane','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0',`startSize=${SWIMLANE_HEADER}`]
+      const body = (el.backgroundColor && el.backgroundColor !== 'transparent') ? el.backgroundColor : '#ffffff';
+      return ['swimlane','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0',`startSize=${SWIMLANE_HEADER}`,`swimlaneFillColor=${body}`]
         .concat(opacityParts(el, opts)).join(';');
     }
-    // Excalidraw frames: thin grey border, transparent body, name above the top-left corner
+    // Excalidraw frames: thin grey border, white body (easier to see on the canvas), name above the top-left corner
     const parts = ['rounded=0','html=1','whiteSpace=wrap','container=1','collapsible=0','recursiveResize=0'];
     const stroke = (el.strokeColor && el.strokeColor !== '#000000' && el.strokeColor !== 'transparent') ? el.strokeColor : '#bbbbbb';
     parts.push(`strokeColor=${stroke}`);
-    parts.push((el.backgroundColor && el.backgroundColor !== 'transparent') ? `fillColor=${el.backgroundColor}` : 'fillColor=none');
+    parts.push((el.backgroundColor && el.backgroundColor !== 'transparent') ? `fillColor=${el.backgroundColor}` : 'fillColor=#ffffff');
     parts.push('strokeWidth=1');
     parts.push('align=left');
     parts.push('verticalAlign=bottom');
@@ -475,6 +546,7 @@
     const data = (typeof excalidata === 'string') ? JSON.parse(excalidata) : excalidata;
     const opts = resolveOptions(options);
     const elements = data.elements || [];
+    opts.roles = flowchartRoles(elements);
     const appState = data.appState || {};
 
     // Compute bounding box offsets so we don't get negative coords
@@ -589,10 +661,26 @@
         x1 -= minX + pl.dx; y1 -= minY + pl.dy; x2 -= minX + pl.dx; y2 -= minY + pl.dy;
         for(const wp of waypoints){ wp.x -= pl.dx; wp.y -= pl.dy; }
         const edgeId = addEdge(el, style, '', {x:x1,y:y1}, {x:x2,y:y2}, pl.parent);
-        if(waypoints.length){
-          const edgeObj = cellObjs.find(c => c.id === edgeId);
-          if(edgeObj) edgeObj.points = waypoints; // store for serialization
-        }
+        const edgeObj = cellObjs.find(c => c.id === edgeId);
+        if(waypoints.length) edgeObj.points = waypoints; // store for serialization
+        edgeObj.bindings = {
+          start: el.startBinding && el.startBinding.elementId,
+          end: el.endBinding && el.endBinding.elementId
+        };
+      }
+    }
+
+    // Connect arrows to the shapes they are bound to (all vertices exist now)
+    if(opts.connect === 'bind'){
+      const vertexIds = new Set(cellObjs.filter(c => c.vertex).map(c => c.id));
+      for(const c of cellObjs){
+        if(!c.edge || !c.bindings) continue;
+        const src = elementToCell[c.bindings.start];
+        const tgt = elementToCell[c.bindings.end];
+        if(src && vertexIds.has(src)) c.source = src;
+        if(tgt && vertexIds.has(tgt)) c.target = tgt;
+        // draw.io routes connected orthogonal edges itself
+        if(opts.edgeRouting === 'orthogonal' && c.source && c.target) delete c.points;
       }
     }
 
@@ -669,7 +757,7 @@
         if(c.points && c.points.length){
           pointsXml = '<Array as="points">' + c.points.map(p => `<mxPoint x="${p.x}" y="${p.y}"/>`).join('') + '</Array>';
         }
-        return `<mxCell id="${c.id}" value="${encodeXml(c.value)}" style="${encodeXml(c.style)}" edge="1" parent="${c.parent}" source="" target=""><mxGeometry relative="1" as="geometry">${pointsXml}<mxPoint x="${c.sourcePoint.x}" y="${c.sourcePoint.y}" as="sourcePoint"/><mxPoint x="${c.targetPoint.x}" y="${c.targetPoint.y}" as="targetPoint"/></mxGeometry></mxCell>`;
+        return `<mxCell id="${c.id}" value="${encodeXml(c.value)}" style="${encodeXml(c.style)}" edge="1" parent="${c.parent}" source="${c.source||''}" target="${c.target||''}"><mxGeometry relative="1" as="geometry">${pointsXml}<mxPoint x="${c.sourcePoint.x}" y="${c.sourcePoint.y}" as="sourcePoint"/><mxPoint x="${c.targetPoint.x}" y="${c.targetPoint.y}" as="targetPoint"/></mxGeometry></mxCell>`;
       }
       return '';
     });
