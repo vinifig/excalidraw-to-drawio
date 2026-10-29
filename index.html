@@ -20,7 +20,8 @@
         <h2 id="step-input"><span class="step">1</span> Add your drawing</h2>
 
         <label id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" accept=".excalidraw,.json,.svg,application/json,image/svg+xml" />
+          <!-- No "accept" filter: iOS greys out .excalidraw files it can't map to a known type; the content is checked after reading -->
+          <input id="fileInput" type="file" />
           <svg class="dz-icon dz-upload" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
           <svg class="dz-icon dz-done" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5L16 9.5" /></svg>
           <span class="dz-title" id="dzTitle">Drop a file here or <u>browse</u></span>
