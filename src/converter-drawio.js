@@ -930,10 +930,17 @@
     return { dataUri: 'data:image/svg+xml,' + encodeURIComponent(svg), offsetX: minX, offsetY: minY, width, height };
   }
 
-  global.ExcDrawio = {
+  const api = {
     convertExcalidrawToDrawio: convert,
     OPTION_DEFS,
     PRESETS,
-    resolveOptions
+    resolveOptions,
+    // Exposed for unit tests
+    internals: {
+      colorFamily, resolveColors, excalidrawCornerRadius, mapArrow, mapFont,
+      flowchartRoles, nestFrames, elementBox, boxContains, sanitizeDataUrl
+    }
   };
-})(window);
+  if(typeof module === 'object' && module.exports) module.exports = api;
+  global.ExcDrawio = api;
+})(typeof window !== 'undefined' ? window : globalThis);

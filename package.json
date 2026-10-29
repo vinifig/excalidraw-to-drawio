@@ -1,0 +1,11 @@
+{
+  "name": "excalidraw-to-drawio",
+  "private": true,
+  "description": "Client-side converter from Excalidraw scenes to draw.io diagrams",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
