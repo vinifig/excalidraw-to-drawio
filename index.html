@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>Excalidraw → draw.io</title>
-    <meta name="description" content="Convert Excalidraw drawings to draw.io diagrams in your browser. Nothing is uploaded." />
+    <meta name="description" content="Convert Excalidraw drawings to draw.io diagrams, Mermaid or PlantUML in your browser. Nothing is uploaded." />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="top">
       <h1>Excalidraw <span aria-hidden="true">→</span><span class="sr-only">to</span> draw.io</h1>
-      <p>Convert your drawings into editable draw.io diagrams. Everything runs in your browser and nothing is uploaded.</p>
+      <p>Convert your drawings into editable draw.io diagrams, or into Mermaid and PlantUML code. Everything runs in your browser and nothing is uploaded.</p>
     </header>
 
     <main>
@@ -40,26 +40,40 @@
         </details>
       </section>
 
-      <!-- 2. Style -->
+      <!-- 2. Output format & style -->
       <section class="card" aria-labelledby="step-style">
-        <h2 id="step-style"><span class="step">2</span> Choose a style</h2>
-        <div id="presetCards" class="presets" role="radiogroup" aria-labelledby="step-style"></div>
+        <h2 id="step-style"><span class="step">2</span> Choose an output</h2>
 
-        <details id="advanced" class="advanced">
-          <summary>
-            <span>Advanced options</span>
-            <span id="customBadge" class="badge" hidden>Customized</span>
-          </summary>
-          <div class="advanced-body">
-            <div id="optionGroups" class="option-groups"></div>
-            <button id="resetBtn" type="button" class="link" hidden>Reset to preset</button>
-          </div>
-        </details>
+        <div id="formatTabs" class="formats" role="radiogroup" aria-label="Output format"></div>
+
+        <div id="drawioPanel">
+          <div id="presetCards" class="presets" role="radiogroup" aria-label="draw.io style"></div>
+
+          <details id="advanced" class="advanced">
+            <summary>
+              <span>Advanced options</span>
+              <span id="customBadge" class="badge" hidden>Customized</span>
+            </summary>
+            <div class="advanced-body">
+              <div id="optionGroups" class="option-groups"></div>
+              <button id="resetBtn" type="button" class="link" hidden>Reset to preset</button>
+            </div>
+          </details>
+        </div>
+
+        <div id="textPanel" hidden>
+          <p class="note">
+            <strong id="textFormatName">Mermaid</strong> describes a diagram as text, so the layout is redone from scratch.
+            Shapes become nodes, arrows connected at both ends become links and frames become groups.
+            Free-floating text, images, drawings and loose arrows are left out.
+          </p>
+          <div id="textOptions" class="text-options"></div>
+        </div>
       </section>
 
       <!-- 3. Output -->
       <section class="card result" aria-labelledby="step-output">
-        <h2 id="step-output"><span class="step">3</span> Get your draw.io file</h2>
+        <h2 id="step-output"><span class="step">3</span> <span id="outHeading">Get your draw.io file</span></h2>
 
         <div id="status" class="status" role="status" aria-live="polite" hidden></div>
 
@@ -72,20 +86,24 @@
               <ul id="stats" class="stats" aria-label="Diagram contents"></ul>
             </div>
           </div>
-          <div class="result-actions">
+          <div id="resultActions" class="result-actions">
             <button id="downloadBtn" type="button" class="primary">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16" /></svg>
-              Download .drawio
+              <span id="downloadLabel">Download .drawio</span>
             </button>
             <a id="openBtn" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" /></svg>
-              Open in draw.io
+              <span id="openLabel">Open in draw.io</span>
             </a>
-            <button id="copyBtn" type="button" class="ghost">Copy XML</button>
+            <button id="copyBtn" type="button" class="ghost">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h10v10H9zM5 15V5h10" /></svg>
+              <span id="copyLabel">Copy XML</span>
+            </button>
           </div>
-          <details class="xml">
-            <summary>View XML</summary>
-            <textarea id="outputText" readonly wrap="off" spellcheck="false" aria-label="draw.io XML"></textarea>
+          <p id="openNote" class="hint" hidden></p>
+          <details id="codeView" class="xml">
+            <summary id="codeSummary">View XML</summary>
+            <textarea id="outputText" readonly wrap="off" spellcheck="false" aria-label="Converted output"></textarea>
           </details>
         </div>
       </section>
@@ -97,6 +115,7 @@
 
     <script src="src/converter-drawio.js"></script>
     <script src="src/svg-extract.js"></script>
+    <script src="src/converter-text.js"></script>
     <script src="src/output.js"></script>
     <script src="src/main.js"></script>
   </body>

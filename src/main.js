@@ -1,10 +1,12 @@
-// Page wiring: input (file, drop, paste), style presets / advanced options, result actions.
+// Page wiring: input (file, drop, paste), output format, draw.io style presets /
+// advanced options, text-diagram options, result actions.
 (function(){
   'use strict';
 
   const { convertExcalidrawToDrawio, OPTION_DEFS, PRESETS } = window.ExcDrawio;
   const { extractExcalidrawFromSVG, isLikelyExcalidrawJSON } = window.ExcSvg;
-  const { summarize, drawioUrl } = window.ExcOutput;
+  const { toMermaid, toPlantUML, TEXT_OPTION_DEFS, TEXT_DEFAULTS } = window.ExcText;
+  const { summarize, drawioUrl, mermaidLiveUrl, plantumlUrl } = window.ExcOutput;
   const $ = id => document.getElementById(id);
 
   const ui = {
@@ -14,7 +16,32 @@
     customBadge: $('customBadge'), resetBtn: $('resetBtn'),
     status: $('status'), emptyState: $('emptyState'), resultBody: $('resultBody'),
     outName: $('outName'), stats: $('stats'), outputText: $('outputText'),
-    downloadBtn: $('downloadBtn'), openBtn: $('openBtn'), copyBtn: $('copyBtn')
+    downloadBtn: $('downloadBtn'), openBtn: $('openBtn'), copyBtn: $('copyBtn'),
+    formatTabs: $('formatTabs'), drawioPanel: $('drawioPanel'), textPanel: $('textPanel'),
+    textFormatName: $('textFormatName'), textOptions: $('textOptions'),
+    outHeading: $('outHeading'), resultActions: $('resultActions'),
+    downloadLabel: $('downloadLabel'), openLabel: $('openLabel'), copyLabel: $('copyLabel'),
+    openNote: $('openNote'), codeView: $('codeView'), codeSummary: $('codeSummary')
+  };
+
+  // Output formats: draw.io is a file to download; Mermaid and PlantUML are
+  // code you mostly copy, so their primary action is Copy.
+  const FORMATS = {
+    drawio: {
+      name: 'draw.io', heading: 'Get your draw.io file', ext: 'drawio', mime: 'application/xml',
+      codeName: 'XML', primary: 'download', openLabel: 'Open in draw.io', link: drawioUrl
+    },
+    mermaid: {
+      name: 'Mermaid', heading: 'Get your Mermaid code', ext: 'mmd', mime: 'text/plain',
+      codeName: 'code', primary: 'copy', openLabel: 'Open in Mermaid Live', link: mermaidLiveUrl,
+      convert: toMermaid
+    },
+    plantuml: {
+      name: 'PlantUML', heading: 'Get your PlantUML code', ext: 'puml', mime: 'text/plain',
+      codeName: 'code', primary: 'copy', openLabel: 'Open on plantuml.com', link: plantumlUrl,
+      convert: toPlantUML,
+      openNote: 'Opening on plantuml.com sends the diagram text to the PlantUML server to render it.'
+    }
   };
 
   const PRESET_INFO = [
@@ -27,15 +54,91 @@
   ];
 
   const STORAGE_KEY = 'excdrawio.style.v2';
+  const OUTPUT_STORAGE_KEY = 'excdrawio.output.v1';
   const LEGACY_STORAGE_KEY = 'excdrawio.styleOptions';
 
   const state = {
+    format: 'drawio',
+    text: Object.assign({}, TEXT_DEFAULTS), // Mermaid / PlantUML options
     preset: 'excalidraw',
     values: Object.assign({}, PRESETS.excalidraw),
     scene: null,          // Excalidraw JSON text currently loaded
     baseName: 'diagram',
     output: ''
   };
+
+  // ---------------------------------------------------------------------------
+  // Output format + Mermaid / PlantUML options
+  // ---------------------------------------------------------------------------
+
+  const textSelects = {};
+
+  function buildFormatControls(){
+    for(const [key, format] of Object.entries(FORMATS)){
+      const tab = document.createElement('label');
+      tab.className = 'format';
+      tab.innerHTML = `<input type="radio" name="format" value="${key}" /><span>${format.name}</span>`;
+      tab.querySelector('input').addEventListener('change', () => setFormat(key));
+      ui.formatTabs.appendChild(tab);
+    }
+    for(const def of TEXT_OPTION_DEFS){
+      const label = document.createElement('label');
+      label.className = 'option';
+      const span = document.createElement('span');
+      span.textContent = def.label;
+      const select = document.createElement('select');
+      for(const [value, text] of def.choices) select.add(new Option(text, value));
+      select.addEventListener('change', () => { state.text[def.key] = select.value; outputChanged(); });
+      label.append(span, select);
+      ui.textOptions.appendChild(label);
+      textSelects[def.key] = select;
+    }
+  }
+
+  function renderFormat(){
+    const format = FORMATS[state.format];
+    for(const input of ui.formatTabs.querySelectorAll('input')) input.checked = input.value === state.format;
+    const isText = state.format !== 'drawio';
+    ui.drawioPanel.hidden = isText;
+    ui.textPanel.hidden = !isText;
+    ui.textFormatName.textContent = format.name;
+    for(const def of TEXT_OPTION_DEFS) textSelects[def.key].value = state.text[def.key];
+
+    ui.outHeading.textContent = format.heading;
+    ui.downloadLabel.textContent = `Download .${format.ext}`;
+    ui.openLabel.textContent = format.openLabel;
+    ui.copyLabel.textContent = `Copy ${format.codeName}`;
+    ui.codeSummary.textContent = `View ${format.codeName}`;
+    ui.downloadBtn.className = format.primary === 'download' ? 'primary' : '';
+    ui.copyBtn.className = format.primary === 'copy' ? 'primary' : 'ghost';
+    ui.resultActions.classList.toggle('copy-first', format.primary === 'copy');
+    ui.openNote.textContent = format.openNote || '';
+    ui.openNote.hidden = !format.openNote;
+    // Code is the result itself for text formats, so show it by default
+    ui.codeView.open = isText;
+  }
+
+  function setFormat(key){
+    state.format = key;
+    outputChanged();
+  }
+
+  function outputChanged(){
+    renderFormat();
+    try { localStorage.setItem(OUTPUT_STORAGE_KEY, JSON.stringify({ format: state.format, text: state.text })); } catch{ /* storage unavailable */ }
+    if(state.scene) convert();
+  }
+
+  function restoreOutput(){
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(OUTPUT_STORAGE_KEY) || 'null'); } catch{ /* ignore */ }
+    if(!saved) return;
+    if(FORMATS[saved.format]) state.format = saved.format;
+    for(const def of TEXT_OPTION_DEFS){
+      const v = saved.text && saved.text[def.key];
+      if(def.choices.some(c => c[0] === v)) state.text[def.key] = v;
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Style: preset cards + advanced options
@@ -244,9 +347,17 @@
   let urlToken = 0;
 
   function convert(){
-    let xml;
+    const format = FORMATS[state.format];
+    let output, statItems;
     try {
-      xml = convertExcalidrawToDrawio(state.scene, Object.assign({ preset: state.preset }, state.values));
+      if(format.convert){
+        const result = format.convert(state.scene, state.text);
+        output = result.text;
+        statItems = textStats(result);
+      } else {
+        output = convertExcalidrawToDrawio(state.scene, Object.assign({ preset: state.preset }, state.values));
+        statItems = drawioStats(summarize(output));
+      }
     } catch(err){
       console.error(err);
       state.output = '';
@@ -254,36 +365,53 @@
       ui.emptyState.hidden = false;
       return showStatus('err', `Conversion failed: ${err && err.message ? err.message : err}`);
     }
-    state.output = xml;
-    ui.outputText.value = xml;
-    ui.outName.textContent = `${state.baseName}.drawio`;
-    renderStats(summarize(xml));
+    state.output = output;
+    ui.outputText.value = output;
+    ui.outName.textContent = `${state.baseName}.${format.ext}`;
+    renderStats(statItems);
     ui.emptyState.hidden = true;
     ui.resultBody.hidden = false;
     hideStatus();
 
-    // The draw.io link is compressed asynchronously; ignore stale results
+    // Links are compressed asynchronously; ignore stale results
     const token = ++urlToken;
     ui.openBtn.setAttribute('aria-disabled', 'true');
-    drawioUrl(xml).then(url => {
+    format.link(output).then(url => {
       if(token !== urlToken) return;
       ui.openBtn.href = url;
       ui.openBtn.setAttribute('aria-disabled', 'false');
     }).catch(() => { /* leave the button disabled */ });
   }
 
-  function renderStats(counts){
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  // [{ text, warn? }] chips describing the result
+  function drawioStats(counts){
     const labels = { shapes: ['shape', 'shapes'], connectors: ['connector', 'connectors'], frames: ['frame', 'frames'], texts: ['text', 'texts'] };
-    ui.stats.textContent = '';
-    for(const [key, [one, many]] of Object.entries(labels)){
-      if(!counts[key]) continue;
-      const li = document.createElement('li');
-      li.textContent = `${counts[key]} ${counts[key] === 1 ? one : many}`;
-      ui.stats.appendChild(li);
+    return Object.entries(labels).filter(([key]) => counts[key]).map(([key, [one, many]]) => ({ text: plural(counts[key], one, many) }));
+  }
+
+  function textStats(result){
+    const { nodes, connections, groups } = result.stats;
+    const items = [];
+    if(nodes) items.push({ text: plural(nodes, 'node', 'nodes') });
+    if(connections) items.push({ text: plural(connections, 'link', 'links') });
+    if(groups) items.push({ text: plural(groups, 'group', 'groups') });
+    const skipped = result.skipped;
+    const left = { texts: ['free text', 'free texts'], arrows: ['loose arrow', 'loose arrows'], images: ['image', 'images'], drawings: ['drawing', 'drawings'], other: ['other element', 'other elements'] };
+    for(const [key, [one, many]] of Object.entries(left)){
+      if(skipped[key]) items.push({ text: `${plural(skipped[key], one, many)} left out`, warn: true });
     }
-    if(!ui.stats.children.length){
+    return items;
+  }
+
+  function renderStats(items){
+    ui.stats.textContent = '';
+    if(!items.length) items = [{ text: 'Empty drawing' }];
+    for(const item of items){
       const li = document.createElement('li');
-      li.textContent = 'Empty drawing';
+      li.textContent = item.text;
+      if(item.warn) li.className = 'warn';
       ui.stats.appendChild(li);
     }
   }
@@ -300,8 +428,9 @@
     ui.downloadBtn.addEventListener('click', () => {
       if(!state.output) return;
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([state.output], { type: 'application/xml' }));
-      a.download = `${state.baseName}.drawio`;
+      const format = FORMATS[state.format];
+      a.href = URL.createObjectURL(new Blob([state.output], { type: format.mime }));
+      a.download = `${state.baseName}.${format.ext}`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     });
@@ -309,19 +438,19 @@
     ui.copyBtn.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(state.output);
-        flash(ui.copyBtn, 'Copied!');
+        flash(ui.copyLabel, 'Copied!');
       } catch{
-        flash(ui.copyBtn, 'Copy failed');
+        flash(ui.copyLabel, 'Copy failed');
       }
     });
   }
 
-  function flash(button, text){
-    const original = button.dataset.label || button.textContent;
-    button.dataset.label = original;
-    button.textContent = text;
-    clearTimeout(button._flash);
-    button._flash = setTimeout(() => { button.textContent = original; }, 1500);
+  function flash(label, text){
+    clearTimeout(label._flash);
+    const original = label._original || label.textContent;
+    label._original = original;
+    label.textContent = text;
+    label._flash = setTimeout(() => { label.textContent = original; label._original = null; }, 1500);
   }
 
   // ---------------------------------------------------------------------------
@@ -344,7 +473,9 @@
         shape('ellipse', 'done', 320, 300, 140, 60, '#e03131', '#ffc9c9'), label('doneText', 'done', 340, 317, 100, 'Done'),
         link('a1', 'start', 'cart', 110, 100, [[0, 0], [0, 60]]),
         link('a2', 'cart', 'paid', 110, 220, [[0, 0], [0, 60]]),
-        link('a3', 'paid', 'done', 190, 330, [[0, 0], [130, 0]]), label('yesText', 'a3', 235, 318, 40, 'yes')
+        link('a3', 'paid', 'done', 190, 330, [[0, 0], [130, 0]]), label('yesText', 'a3', 235, 318, 40, 'yes'),
+        Object.assign(link('a4', 'paid', 'cart', 30, 330, [[0, 0], [-20, 0], [-20, -140], [10, -140]]), { strokeStyle: 'dashed', roundness: null }),
+        label('noText', 'a4', -10, 250, 30, 'no')
       ],
       files: {}
     };
@@ -352,8 +483,11 @@
 
   // ---------------------------------------------------------------------------
 
+  buildFormatControls();
   buildStyleControls();
+  restoreOutput();
   restoreStyle();
+  renderFormat();
   renderStyle();
   bindInput();
   bindResult();
