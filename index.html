@@ -3,67 +3,100 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Excalidraw → draw.io Converter (Web)</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>Excalidraw → draw.io</title>
+    <meta name="description" content="Convert Excalidraw drawings to draw.io diagrams in your browser. Nothing is uploaded." />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header>
-      <h1>Excalidraw → draw.io Converter</h1>
-      <p class="sub">Client-side conversion of Excalidraw JSON to draw.io (mxGraph) XML. No uploads.</p>
+    <header class="top">
+      <h1>Excalidraw <span aria-hidden="true">→</span><span class="sr-only">to</span> draw.io</h1>
+      <p>Convert your drawings into editable draw.io diagrams. Everything runs in your browser and nothing is uploaded.</p>
     </header>
 
     <main>
-      <section class="input">
-        <div class="picker">
-          <label class="file-label">
-            <input id="fileInput" type="file" accept=".excalidraw,.json,.svg,application/json,image/svg+xml" />
-            <span>Select .excalidraw / .svg file</span>
-          </label>
-          <button id="sampleBtn" type="button" class="linkish">Load sample</button>
+      <!-- 1. Input -->
+      <section class="card" aria-labelledby="step-input">
+        <h2 id="step-input"><span class="step">1</span> Add your drawing</h2>
+
+        <label id="dropzone" class="dropzone">
+          <input id="fileInput" type="file" accept=".excalidraw,.json,.svg,application/json,image/svg+xml" />
+          <svg class="dz-icon dz-upload" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
+          <svg class="dz-icon dz-done" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5L16 9.5" /></svg>
+          <span class="dz-title" id="dzTitle">Drop a file here or <u>browse</u></span>
+          <span class="dz-hint" id="dzHint">.excalidraw, .json, or an .svg exported with “Embed scene”</span>
+        </label>
+
+        <div class="input-actions">
+          <button id="sampleBtn" type="button" class="link">Try a sample flowchart</button>
+          <span class="dot" aria-hidden="true">·</span>
+          <span class="muted">or copy shapes in Excalidraw and press <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>V</kbd> here</span>
         </div>
 
-        <fieldset class="options">
-          <legend>Output style</legend>
-          <label class="preset">
-            <span>Preset</span>
-            <select id="presetSelect">
-              <option value="excalidraw">Excalidraw look (faithful)</option>
-              <option value="drawio">draw.io default look</option>
-              <option value="flowchart">draw.io flowchart</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          <div id="optionGrid" class="option-grid"></div>
-        </fieldset>
-
-        <textarea id="inputText" placeholder="Or paste Excalidraw JSON here..." wrap="off" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+        <details class="paste">
+          <summary>Paste JSON instead</summary>
+          <textarea id="inputText" placeholder="Paste Excalidraw JSON here…" wrap="off" autocapitalize="off" autocomplete="off" spellcheck="false" aria-label="Excalidraw JSON"></textarea>
+        </details>
       </section>
 
-      <section class="output">
-        <div class="actions">
-          <button id="downloadBtn" type="button" disabled>Download .drawio</button>
-        </div>
+      <!-- 2. Style -->
+      <section class="card" aria-labelledby="step-style">
+        <h2 id="step-style"><span class="step">2</span> Choose a style</h2>
+        <div id="presetCards" class="presets" role="radiogroup" aria-labelledby="step-style"></div>
 
-        <div class="split">
-          <div>
-            <h3>draw.io XML</h3>
-            <textarea id="outputText" readonly placeholder="Converted draw.io XML will appear here..." wrap="off" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+        <details id="advanced" class="advanced">
+          <summary>
+            <span>Advanced options</span>
+            <span id="customBadge" class="badge" hidden>Customized</span>
+          </summary>
+          <div class="advanced-body">
+            <div id="optionGroups" class="option-groups"></div>
+            <button id="resetBtn" type="button" class="link" hidden>Reset to preset</button>
           </div>
-          <div>
-            <h3>Info</h3>
-            <pre id="info"></pre>
+        </details>
+      </section>
+
+      <!-- 3. Output -->
+      <section class="card result" aria-labelledby="step-output">
+        <h2 id="step-output"><span class="step">3</span> Get your draw.io file</h2>
+
+        <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+
+        <p id="emptyState" class="empty">Your converted diagram will show up here.</p>
+
+        <div id="resultBody" hidden>
+          <div class="result-head">
+            <div>
+              <div id="outName" class="out-name">diagram.drawio</div>
+              <ul id="stats" class="stats" aria-label="Diagram contents"></ul>
+            </div>
           </div>
+          <div class="result-actions">
+            <button id="downloadBtn" type="button" class="primary">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16" /></svg>
+              Download .drawio
+            </button>
+            <a id="openBtn" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" /></svg>
+              Open in draw.io
+            </a>
+            <button id="copyBtn" type="button" class="ghost">Copy XML</button>
+          </div>
+          <details class="xml">
+            <summary>View XML</summary>
+            <textarea id="outputText" readonly wrap="off" spellcheck="false" aria-label="draw.io XML"></textarea>
+          </details>
         </div>
       </section>
     </main>
 
     <footer>
-      <p>Built for local use. Heuristic conversion of Excalidraw primitives to draw.io (mxGraph) XML.</p>
-      <p>(Inspired by gliffy converter)</p>
-      <p>Made with GPT-5 🤯</p>
+      <p>Heuristic conversion of Excalidraw primitives to draw.io (mxGraph) XML · Inspired by the Gliffy converter · Made with GPT-5 🤯</p>
     </footer>
 
-    <script src="converter-drawio.js"></script>
-    <script src="main.js"></script>
+    <script src="src/converter-drawio.js"></script>
+    <script src="src/svg-extract.js"></script>
+    <script src="src/output.js"></script>
+    <script src="src/main.js"></script>
   </body>
 </html>

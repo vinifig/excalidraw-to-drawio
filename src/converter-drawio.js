@@ -8,7 +8,8 @@
 // mxGraphModel XML; draw.io will still import it.
 // We assign incremental IDs; parent layer is id=0, default layer = 1.
 // Excalidraw frames become draw.io containers; elements with a frameId are
-// nested inside them using coordinates relative to the frame.
+// nested inside them using coordinates relative to the frame. Excalidraw can't
+// nest frames, so a frame drawn entirely inside another one is nested here.
 //
 // Styling is driven by conversion options (see OPTION_DEFS / PRESETS):
 // "excalidraw" keeps the original look, "drawio" maps everything to draw.io's
@@ -24,69 +25,70 @@
   // Conversion options
   // ---------------------------------------------------------------------------
 
+  // `group` only organizes the options in the UI
   const OPTION_DEFS = [
-    { key: 'shapes', label: 'Shapes', choices: [
+    { key: 'shapes', group: 'Shapes', label: 'Shapes', choices: [
       ['keep', 'Keep Excalidraw shapes'],
       ['flowchart', 'Flowchart (ellipse = start/end)']
     ]},
-    { key: 'colors', label: 'Colors', choices: [
+    { key: 'colors', group: 'Colors', label: 'Colors', choices: [
       ['keep', 'Keep Excalidraw colors'],
       ['palette', 'Map to draw.io palette'],
       ['flowchart', 'Fixed color per flowchart shape'],
       ['default', 'draw.io default (no colors)']
     ]},
-    { key: 'transparentFill', label: 'Transparent fills', choices: [
+    { key: 'transparentFill', group: 'Colors', label: 'Transparent fills', choices: [
       ['keep', 'Keep transparent'],
       ['white', 'draw.io default (white)']
     ]},
-    { key: 'roundness', label: 'Corners', choices: [
+    { key: 'roundness', group: 'Shapes', label: 'Corners', choices: [
       ['keep', 'Keep Excalidraw radius'],
       ['drawio', 'draw.io rounded when rounded'],
       ['square', 'Always square'],
       ['round', 'Always rounded']
     ]},
-    { key: 'sketch', label: 'Hand-drawn (sketch)', choices: [
+    { key: 'sketch', group: 'Shapes', label: 'Hand-drawn (sketch)', choices: [
       ['keep', 'Keep (from roughness / fill style)'],
       ['on', 'Always sketch'],
       ['off', 'Never sketch']
     ]},
-    { key: 'font', label: 'Fonts', choices: [
+    { key: 'font', group: 'Text', label: 'Fonts', choices: [
       ['keep', 'Closest to Excalidraw fonts'],
       ['default', 'draw.io default (Helvetica)']
     ]},
-    { key: 'strokeWidth', label: 'Stroke width', choices: [
+    { key: 'strokeWidth', group: 'Lines & strokes', label: 'Stroke width', choices: [
       ['keep', 'Keep Excalidraw width'],
       ['default', 'draw.io default (1)']
     ]},
-    { key: 'strokeStyle', label: 'Dashed / dotted', choices: [
+    { key: 'strokeStyle', group: 'Lines & strokes', label: 'Dashed / dotted', choices: [
       ['keep', 'Keep'],
       ['solid', 'Always solid']
     ]},
-    { key: 'arrowheads', label: 'Arrowheads', choices: [
+    { key: 'arrowheads', group: 'Arrows', label: 'Arrowheads', choices: [
       ['keep', 'Closest to Excalidraw'],
       ['drawio', 'draw.io classic arrow']
     ]},
-    { key: 'connect', label: 'Arrow bindings', choices: [
+    { key: 'connect', group: 'Arrows', label: 'Arrow bindings', choices: [
       ['free', 'Free-floating arrows'],
       ['bind', 'Connect arrows to shapes']
     ]},
-    { key: 'edgeRouting', label: 'Arrow routing', choices: [
+    { key: 'edgeRouting', group: 'Arrows', label: 'Arrow routing', choices: [
       ['keep', 'Follow Excalidraw points'],
       ['orthogonal', 'draw.io orthogonal (auto)']
     ]},
-    { key: 'edgeShape', label: 'Lines', choices: [
+    { key: 'edgeShape', group: 'Lines & strokes', label: 'Lines', choices: [
       ['filled', 'Filled edge'],
       ['standard', 'Standard connector']
     ]},
-    { key: 'opacity', label: 'Opacity', choices: [
+    { key: 'opacity', group: 'Colors', label: 'Opacity', choices: [
       ['keep', 'Keep'],
       ['ignore', 'Ignore (fully opaque)']
     ]},
-    { key: 'frames', label: 'Frames', choices: [
+    { key: 'frames', group: 'Page', label: 'Frames', choices: [
       ['excalidraw', 'Excalidraw-like frame'],
       ['swimlane', 'draw.io container (swimlane)']
     ]},
-    { key: 'canvas', label: 'Canvas', choices: [
+    { key: 'canvas', group: 'Page', label: 'Canvas', choices: [
       ['keep', 'Keep background & grid'],
       ['default', 'draw.io default']
     ]}
@@ -149,19 +151,37 @@
     decision: DRAWIO_PALETTE.yellow
   };
 
-  // Flowchart role of a shape: ellipses are terminators (start when nothing
-  // points into them, end when nothing leaves them), rectangles are
-  // processes and diamonds are decisions.
+  const START_WORDS = /^(start|begin|in[ií]cio|come[cç]o|iniciar|come[cç]ar)\b/i;
+  const END_WORDS = /^(end|stop|finish|exit|fim|t[eé]rmino|final|finalizar|encerrar|sair)\b/i;
+
+  // Flowchart role of a shape: rectangles are processes, diamonds are
+  // decisions and ellipses are terminators. A flowchart doesn't need an end:
+  // a terminator is only an end when its label says so (End, Fim, Stop...) or
+  // when the flow only arrives at it; otherwise it is a start.
   function flowchartRoles(elements){
-    const incoming = {}, outgoing = {};
+    const incoming = {}, outgoing = {}, labels = {};
+    const count = (map, id) => { if(id) map[id] = (map[id] || 0) + 1; };
     for(const el of elements){
-      if(el.isDeleted || !['arrow','line'].includes(el.type)) continue;
-      if(el.startBinding && el.startBinding.elementId) outgoing[el.startBinding.elementId] = (outgoing[el.startBinding.elementId] || 0) + 1;
-      if(el.endBinding && el.endBinding.elementId) incoming[el.endBinding.elementId] = (incoming[el.endBinding.elementId] || 0) + 1;
+      if(el.isDeleted) continue;
+      if(el.type === 'text' && el.containerId) labels[el.containerId] = String(el.text || '').trim();
+      if(!['arrow','line'].includes(el.type)) continue;
+      let from = el.startBinding && el.startBinding.elementId;
+      let to = el.endBinding && el.endBinding.elementId;
+      // An arrow drawn backwards (head only at its start) flows end -> start
+      const startHead = el.startArrowhead && el.startArrowhead !== 'none';
+      const endHead = (el.endArrowhead !== undefined ? el.endArrowhead : (el.type === 'arrow' ? 'arrow' : null));
+      if(startHead && (!endHead || endHead === 'none')) [from, to] = [to, from];
+      count(outgoing, from);
+      count(incoming, to);
     }
     const roles = {};
     for(const el of elements){
-      if(el.type === 'ellipse') roles[el.id] = (incoming[el.id] && !outgoing[el.id]) ? 'end' : 'start';
+      if(el.type === 'ellipse'){
+        const label = labels[el.id] || '';
+        if(END_WORDS.test(label)) roles[el.id] = 'end';
+        else if(START_WORDS.test(label)) roles[el.id] = 'start';
+        else roles[el.id] = (incoming[el.id] && !outgoing[el.id]) ? 'end' : 'start';
+      }
       else if(el.type === 'rectangle') roles[el.id] = 'process';
       else if(el.type === 'diamond') roles[el.id] = 'decision';
     }
@@ -512,6 +532,37 @@
     return parts.join(';');
   }
 
+  // Axis-aligned bounding box in scene coordinates
+  function elementBox(el){
+    if(Array.isArray(el.points) && el.points.length){
+      const xs = el.points.map(p => p[0]), ys = el.points.map(p => p[1]);
+      return { x1: el.x + Math.min(...xs), y1: el.y + Math.min(...ys), x2: el.x + Math.max(...xs), y2: el.y + Math.max(...ys) };
+    }
+    return { x1: el.x, y1: el.y, x2: el.x + (el.width || 0), y2: el.y + (el.height || 0) };
+  }
+
+  function boxContains(outer, inner){
+    return inner.x1 >= outer.x1 && inner.y1 >= outer.y1 && inner.x2 <= outer.x2 && inner.y2 <= outer.y2;
+  }
+
+  // Parent frame id for each frame: the smallest frame that fully contains it
+  function nestFrames(frames){
+    const parents = {};
+    const area = f => (f.width || 0) * (f.height || 0);
+    frames.forEach((f, i) => {
+      const box = elementBox(f);
+      let best = null;
+      frames.forEach((g, j) => {
+        if(i === j || !boxContains(elementBox(g), box)) return;
+        // Identical boxes contain each other: the one listed first is the outer one
+        if(j > i && boxContains(box, elementBox(g))) return;
+        if(!best || area(g) < area(best)) best = g;
+      });
+      if(best) parents[f.id] = best.id;
+    });
+    return parents;
+  }
+
   // ---------------------------------------------------------------------------
   // Images
   // ---------------------------------------------------------------------------
@@ -564,13 +615,36 @@
     const elementToCell = {}; // excalidraw element id -> mx cell id
     const deferredText = [];  // store text elements for second pass
     const frameOrigins = {};  // excalidraw frame id -> origin of its children (page coords)
+    const frames = elements.filter(el => !el.isDeleted && FRAME_TYPES.includes(el.type));
+    const frameParents = nestFrames(frames);
+    const frameChildren = {}; // excalidraw frame id -> frames nested directly inside it
+    for(const f of frames){
+      const parentId = frameParents[f.id];
+      if(parentId) (frameChildren[parentId] = frameChildren[parentId] || []).push(f);
+    }
+
+    // An element belongs to its Excalidraw frame, or to the innermost frame
+    // nested in it that fully contains the element.
+    function frameOf(el){
+      let frameId = el.frameId;
+      if(!frameId || !frameOrigins[frameId]) return null;
+      const box = elementBox(el);
+      for(let inner = true; inner;){
+        inner = false;
+        for(const child of frameChildren[frameId] || []){
+          if(boxContains(elementBox(child), box)){ frameId = child.id; inner = true; break; }
+        }
+      }
+      return frameId;
+    }
 
     // Resolve the parent cell for an element: its frame container (with
     // coordinates relative to the frame) or the default layer.
     function placement(el){
-      const origin = el.frameId && frameOrigins[el.frameId];
-      if(origin && elementToCell[el.frameId]){
-        return { parent: elementToCell[el.frameId], dx: origin.x, dy: origin.y };
+      const frameId = FRAME_TYPES.includes(el.type) ? frameParents[el.id] : frameOf(el);
+      const origin = frameId && frameOrigins[frameId];
+      if(origin && elementToCell[frameId]){
+        return { parent: elementToCell[frameId], dx: origin.x, dy: origin.y };
       }
       return { parent: '1', dx: 0, dy: 0 };
     }
@@ -590,9 +664,12 @@
       return id;
     }
 
-    // Frames first so containers exist (and render behind) before their children
-    for(const el of elements){
-      if(el.isDeleted || !FRAME_TYPES.includes(el.type)) continue;
+    // Frames first so containers exist (and render behind) before their children;
+    // outer frames before the frames nested in them
+    const frameDepth = f => frameParents[f.id] ? 1 + frameDepth(frames.find(g => g.id === frameParents[f.id])) : 0;
+    const orderedFrames = frames.map(f => ({ f, depth: frameDepth(f) }))
+      .sort((a, b) => a.depth - b.depth).map(e => e.f);
+    for(const el of orderedFrames){
       const x = (el.x - minX) || 0;
       const y = (el.y - minY) || 0;
       const w = Math.max(1, Math.round(el.width || 100));
@@ -600,8 +677,9 @@
       const name = el.name != null ? el.name : (el.type === 'magicframe' ? 'AI Frame' : 'Frame');
       // A swimlane's header is part of the cell, so grow it upwards to keep contents in place
       const header = opts.frames === 'swimlane' ? SWIMLANE_HEADER : 0;
+      const pl = placement(el);
       frameOrigins[el.id] = { x, y: y - header };
-      addVertex(el, frameStyle(el, opts), encodeXml(name), '1', x, y - header, w, h + header);
+      addVertex(el, frameStyle(el, opts), encodeXml(name), pl.parent, x - pl.dx, y - header - pl.dy, w, h + header);
     }
 
     for(const el of elements){
@@ -853,10 +931,17 @@
     return { dataUri: 'data:image/svg+xml,' + encodeURIComponent(svg), offsetX: minX, offsetY: minY, width, height };
   }
 
-  global.ExcDrawio = {
+  const api = {
     convertExcalidrawToDrawio: convert,
     OPTION_DEFS,
     PRESETS,
-    resolveOptions
+    resolveOptions,
+    // Exposed for unit tests
+    internals: {
+      colorFamily, resolveColors, excalidrawCornerRadius, mapArrow, mapFont,
+      flowchartRoles, nestFrames, elementBox, boxContains, sanitizeDataUrl
+    }
   };
-})(window);
+  if(typeof module === 'object' && module.exports) module.exports = api;
+  global.ExcDrawio = api;
+})(typeof window !== 'undefined' ? window : globalThis);
