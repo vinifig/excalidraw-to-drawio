@@ -26,12 +26,14 @@ ExcDrawio.convertExcalidrawToDrawio(sceneJsonOrObject, options) // -> draw.io XM
 
 `options` is a preset name (`'excalidraw'`, `'drawio'`, `'flowchart'`) or `{ preset, ...overrides }`. See `OPTION_DEFS` and `PRESETS` in `src/converter-drawio.js` for every option and its values.
 
+Stacking follows Excalidraw (element order, or the fractional `index` when present), with one change: a rectangle, ellipse or diamond that fully contains other elements is drawn below them. With `nesting: 'group'` (the default) those elements also become children of it in draw.io, the same way frames inside frames are nested.
+
 ```js
 ExcText.toMermaid(sceneJsonOrObject, { direction: 'auto' | 'TB' | 'LR', colors: 'keep' | 'none' })  // -> { text, stats, skipped }
 ExcText.toPlantUML(sceneJsonOrObject, { direction, colors })                                       // -> { text, stats, skipped }
 ```
 
-Text diagrams have no coordinates, so the scene is read as a graph: rectangles, ellipses and diamonds become nodes, arrows bound at both ends become links (labels, dashes and direction kept), and frames become subgraphs / frames. Free-floating text, images, freehand drawings and loose arrows are left out and counted in `skipped`. PlantUML output is a free-form (deployment-style) diagram: ellipses are `usecase`, diamonds `hexagon`, rectangles `rectangle`.
+Text diagrams have no coordinates, so the scene is read as a graph: rectangles, ellipses and diamonds become nodes, arrows bound at both ends become links (labels, dashes and direction kept), frames become subgraphs / frames, and a shape with other shapes inside it becomes a group around them. Free-floating text, images, freehand drawings and loose arrows are left out and counted in `skipped`. PlantUML output is a free-form (deployment-style) diagram: ellipses are `usecase`, diamonds `hexagon`, rectangles `rectangle`.
 
 ## Tests
 

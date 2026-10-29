@@ -126,7 +126,10 @@ test('flowchart preset: shapes, fixed colors and connected arrows', () => {
     rect({ id: 'p', y: 100, backgroundColor: '#b2f2bb' }),
     diamond({ id: 'd', y: 200 }),
     ellipse({ id: 'e', y: 300 }),
-    link('a1', 's', 'p'), link('a2', 'p', 'd'), link('a3', 'd', 'e')
+    // each arrow runs in the gap between the shapes it links
+    link('a1', 's', 'p', { x: 50, y: 50, points: [[0, 0], [0, 50]] }),
+    link('a2', 'p', 'd', { x: 50, y: 150, points: [[0, 0], [0, 50]] }),
+    link('a3', 'd', 'e', { x: 50, y: 250, points: [[0, 0], [0, 50]] })
   ], 'flowchart');
   assert.equal(start.style.shape, 'mxgraph.flowchart.terminator');
   assert.deepEqual([start.style.fillColor, start.style.strokeColor], ['#d5e8d4', '#82b366']);

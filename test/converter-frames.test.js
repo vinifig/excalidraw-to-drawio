@@ -38,7 +38,7 @@ test('frames are emitted before (behind) their children', () => {
 });
 
 test('frame children use coordinates relative to the frame', () => {
-  // Text cells are emitted after shapes and edges
+  // Cells follow the Excalidraw draw order
   const [f, r, a, t] = cellsOf([
     frame({ id: 'f', x: 100, y: 100 }),
     rect({ id: 'r', x: 150, y: 160, frameId: 'f' }),
