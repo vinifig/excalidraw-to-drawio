@@ -165,6 +165,8 @@
         return failLoad(`${file.name} has no Excalidraw drawing inside. In Excalidraw, export the SVG with “Embed scene” turned on.`);
       }
       text = scene;
+    } else if(!/^\s*\{/.test(text)){
+      return failLoad(`${file.name} isn't an Excalidraw file. Pick a .excalidraw or .json file, or an .svg exported with “Embed scene”.`);
     }
     loadScene(text, baseName, `${file.name} · ${formatSize(file.size)}`);
   }
