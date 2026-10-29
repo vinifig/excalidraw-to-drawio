@@ -1,7 +1,8 @@
 // Excalidraw -> Mermaid / PlantUML text diagrams.
 // Text diagrams have no coordinates, so the drawing is read as a graph:
 // shapes become nodes, arrows bound to two shapes become connections, frames
-// become groups (nested frames nest). Free-floating text, images, freehand
+// become groups (nested frames nest) and a shape with other shapes drawn inside
+// it becomes a group around them. Free-floating text, images, freehand
 // drawings and arrows that aren't attached at both ends are left out and
 // reported in `skipped`.
 // Works in the browser (window.ExcText, after converter-drawio.js) and in
@@ -11,7 +12,7 @@
   'use strict';
 
   const core = (typeof module === 'object' && module.exports) ? require('./converter-drawio.js') : global.ExcDrawio;
-  const { flowchartRoles, nestFrames, elementBox, boxContains, colorFamily } = core.internals;
+  const { flowchartRoles, assignFrames, nestShapes, inDrawOrder, colorFamily } = core.internals;
 
   const TEXT_OPTION_DEFS = [
     { key: 'direction', label: 'Direction', choices: [
@@ -48,7 +49,7 @@
   // { nodes, edges, groups, skipped, direction }
   function buildGraph(scene){
     const data = (typeof scene === 'string') ? JSON.parse(scene) : (scene || {});
-    const elements = (data.elements || []).filter(el => el && !el.isDeleted);
+    const elements = inDrawOrder((data.elements || []).filter(el => el && !el.isDeleted));
     const roles = flowchartRoles(elements);
 
     // Text bound to a shape or an arrow is that element's label
@@ -67,27 +68,9 @@
       if(el.endBinding && el.endBinding.elementId) boundIds.add(el.endBinding.elementId);
     }
 
-    // Frames -> groups, nested like in the draw.io export
-    const frames = elements.filter(el => FRAME_TYPES.includes(el.type));
-    const frameParents = nestFrames(frames);
-    const frameChildren = {};
-    for(const f of frames){
-      const parentId = frameParents[f.id];
-      if(parentId) (frameChildren[parentId] = frameChildren[parentId] || []).push(f);
-    }
-    const frameIds = new Set(frames.map(f => f.id));
-    function frameOf(el){
-      let frameId = el.frameId;
-      if(!frameId || !frameIds.has(frameId)) return null;
-      const box = elementBox(el);
-      for(let inner = true; inner;){
-        inner = false;
-        for(const child of frameChildren[frameId] || []){
-          if(boxContains(elementBox(child), box)){ frameId = child.id; inner = true; break; }
-        }
-      }
-      return frameId;
-    }
+    // Frames -> groups, and shapes inside shapes, nested like in the draw.io export
+    const { frames, frameParents, frameOf } = assignFrames(elements);
+    const shapeParents = nestShapes(elements, frameOf);
 
     const groups = [];
     const groupOfFrame = {};
@@ -115,7 +98,7 @@
         const id = `n${nodes.length + 1}`;
         const frameId = frameOf(el);
         nodes.push({
-          id, kind,
+          id, kind, elementId: el.id, parentNode: null, isGroup: false,
           role: roles[el.id] || null,
           label: kind === 'text' ? String(el.text || '') : (labels[el.id] || ''),
           group: frameId ? groupOfFrame[frameId] : null,
@@ -130,6 +113,15 @@
       else if(el.type === 'freedraw') skipped.drawings++;
       else if(!LINE_TYPES.includes(el.type) && !FRAME_TYPES.includes(el.type) && !SHAPE_TYPES.includes(el.type)) skipped.other++;
     }
+
+    // A node inside another node: drawn inside it, the outer one becomes a group
+    for(const n of nodes){
+      const parentEl = shapeParents[n.elementId];
+      n.parentNode = (parentEl && nodeOf[parentEl]) || null;
+    }
+    const nodeById = {};
+    for(const n of nodes) nodeById[n.id] = n;
+    for(const n of nodes) if(n.parentNode) nodeById[n.parentNode].isGroup = true;
 
     const edges = [];
     for(const el of elements){
@@ -162,7 +154,7 @@
     return dx > dy ? 'LR' : 'TB';
   }
 
-  // Groups that contain a node, directly or through a nested group
+  // Frame groups that contain a node, directly or through a nested group
   function usedGroups(graph){
     const parentOf = {};
     for(const g of graph.groups) parentOf[g.id] = g.parent;
@@ -173,10 +165,18 @@
     return graph.groups.filter(g => used.has(g.id));
   }
 
-  // Walks groups depth-first: emit(lines, indent) for the nodes of each level
-  function renderTree(graph, open, close, nodeLine){
+  // Walks frames, then nodes, depth-first. A node with nodes inside it is
+  // written as a group: openNode(n) ... closeNode(n); others as nodeLine(n).
+  function renderTree(graph, open, close, nodeLine, openNode, closeNode){
     const groups = usedGroups(graph);
     const lines = [];
+    function node(n, indent){
+      const pad = '  '.repeat(indent);
+      if(!n.isGroup){ lines.push(pad + nodeLine(n)); return; }
+      lines.push(pad + openNode(n));
+      for(const child of graph.nodes.filter(c => c.parentNode === n.id)) node(child, indent + 1);
+      lines.push(pad + closeNode(n));
+    }
     function level(groupId, indent){
       const pad = '  '.repeat(indent);
       for(const g of groups.filter(g => g.parent === groupId)){
@@ -184,14 +184,15 @@
         level(g.id, indent + 1);
         lines.push(pad + close(g));
       }
-      for(const n of graph.nodes.filter(n => n.group === groupId)) lines.push(pad + nodeLine(n));
+      for(const n of graph.nodes.filter(n => n.group === groupId && !n.parentNode)) node(n, indent);
     }
     level(null, 1);
     return lines;
   }
 
   function stats(graph){
-    return { nodes: graph.nodes.length, connections: graph.edges.length, groups: usedGroups(graph).length };
+    const groups = usedGroups(graph).length + graph.nodes.filter(n => n.isGroup).length;
+    return { nodes: graph.nodes.length, connections: graph.edges.length, groups };
   }
 
   // ---------------------------------------------------------------------------
@@ -226,7 +227,10 @@
     lines.push(...renderTree(graph,
       g => `subgraph ${g.id}[${mermaidText(g.name)}]`,
       () => 'end',
-      n => n.id + MERMAID_SHAPES[n.kind](mermaidText(n.label))
+      n => n.id + MERMAID_SHAPES[n.kind](mermaidText(n.label)),
+      // Links can point at a subgraph, so the group keeps the node's id
+      n => `subgraph ${n.id}[${mermaidText(n.label)}]`,
+      () => 'end'
     ));
     for(const e of graph.edges) lines.push(`  ${e.from} ${mermaidArrow(e)} ${e.to}`);
     if(opts.colors === 'keep'){
@@ -261,6 +265,10 @@
     text: 'label'
   };
 
+  function plantColor(n, opts){
+    return (opts.colors === 'keep' && n.fill && /^#[0-9a-f]{3,8}$/i.test(n.fill)) ? ` ${n.fill}` : '';
+  }
+
   function plantArrow(e){
     const body = e.dashed
       ? { none: '..', forward: '..>', both: '<..>' }[e.dir]
@@ -278,10 +286,10 @@
     lines.push(...renderTree(graph,
       g => `frame ${plantText(g.name)} as ${g.id} {`,
       () => '}',
-      n => {
-        const color = (opts.colors === 'keep' && n.fill && /^#[0-9a-f]{3,8}$/i.test(n.fill)) ? ` ${n.fill}` : '';
-        return `${PLANT_SHAPES[n.kind]} ${plantText(n.label)} as ${n.id}${color}`;
-      }
+      n => `${PLANT_SHAPES[n.kind]} ${plantText(n.label)} as ${n.id}${plantColor(n, opts)}`,
+      // Only some PlantUML elements can hold others: a containing shape is a rectangle
+      n => `rectangle ${plantText(n.label)} as ${n.id}${plantColor(n, opts)} {`,
+      () => '}'
     ).map(l => l.slice(2))); // top level has no indentation in PlantUML
     for(const e of graph.edges) lines.push(plantArrow(e));
     lines.push('@enduml');

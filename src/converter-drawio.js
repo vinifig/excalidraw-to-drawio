@@ -10,6 +10,8 @@
 // Excalidraw frames become draw.io containers; elements with a frameId are
 // nested inside them using coordinates relative to the frame. Excalidraw can't
 // nest frames, so a frame drawn entirely inside another one is nested here.
+// Likewise, shapes drawn entirely inside a rectangle, ellipse or diamond are
+// nested in it, and a containing shape is always drawn below its contents.
 //
 // Styling is driven by conversion options (see OPTION_DEFS / PRESETS):
 // "excalidraw" keeps the original look, "drawio" maps everything to draw.io's
@@ -84,6 +86,10 @@
       ['keep', 'Keep'],
       ['ignore', 'Ignore (fully opaque)']
     ]},
+    { key: 'nesting', group: 'Shapes', label: 'Shapes inside shapes', choices: [
+      ['group', 'Group with the outer shape'],
+      ['flat', 'Keep separate']
+    ]},
     { key: 'frames', group: 'Page', label: 'Frames', choices: [
       ['excalidraw', 'Excalidraw-like frame'],
       ['swimlane', 'draw.io container (swimlane)']
@@ -96,19 +102,19 @@
 
   const PRESETS = {
     excalidraw: {
-      shapes: 'keep', connect: 'free', edgeRouting: 'keep',
+      shapes: 'keep', connect: 'free', edgeRouting: 'keep', nesting: 'group',
       colors: 'keep', transparentFill: 'keep', roundness: 'keep', sketch: 'keep',
       font: 'keep', strokeWidth: 'keep', strokeStyle: 'keep', arrowheads: 'keep',
       edgeShape: 'filled', opacity: 'keep', frames: 'excalidraw', canvas: 'keep'
     },
     drawio: {
-      shapes: 'keep', connect: 'bind', edgeRouting: 'keep',
+      shapes: 'keep', connect: 'bind', edgeRouting: 'keep', nesting: 'group',
       colors: 'palette', transparentFill: 'white', roundness: 'drawio', sketch: 'off',
       font: 'default', strokeWidth: 'default', strokeStyle: 'keep', arrowheads: 'drawio',
       edgeShape: 'standard', opacity: 'keep', frames: 'swimlane', canvas: 'default'
     },
     flowchart: {
-      shapes: 'flowchart', connect: 'bind', edgeRouting: 'orthogonal',
+      shapes: 'flowchart', connect: 'bind', edgeRouting: 'orthogonal', nesting: 'group',
       colors: 'flowchart', transparentFill: 'white', roundness: 'drawio', sketch: 'off',
       font: 'default', strokeWidth: 'default', strokeStyle: 'keep', arrowheads: 'drawio',
       edgeShape: 'standard', opacity: 'ignore', frames: 'swimlane', canvas: 'default'
@@ -563,6 +569,105 @@
     return parents;
   }
 
+  // Frame membership: an element belongs to its Excalidraw frame, or to the
+  // innermost frame nested in it that fully contains the element.
+  function assignFrames(elements){
+    const frames = elements.filter(el => !el.isDeleted && FRAME_TYPES.includes(el.type));
+    const frameParents = nestFrames(frames);
+    const frameChildren = {}; // frame id -> frames nested directly inside it
+    for(const f of frames){
+      const parentId = frameParents[f.id];
+      if(parentId) (frameChildren[parentId] = frameChildren[parentId] || []).push(f);
+    }
+    const frameIds = new Set(frames.map(f => f.id));
+    function frameOf(el){
+      let frameId = el.frameId;
+      if(!frameId || !frameIds.has(frameId)) return null;
+      const box = elementBox(el);
+      for(let inner = true; inner;){
+        inner = false;
+        for(const child of frameChildren[frameId] || []){
+          if(boxContains(elementBox(child), box)){ frameId = child.id; inner = true; break; }
+        }
+      }
+      return frameId;
+    }
+    return { frames, frameParents, frameOf };
+  }
+
+  const CONTAINER_SHAPES = ['rectangle', 'ellipse', 'diamond'];
+
+  // Parent shape for each element drawn entirely inside a rectangle, ellipse or
+  // diamond of the same frame: the smallest such shape. Rotated shapes don't
+  // contain anything (their box isn't axis-aligned); text bound to a shape or
+  // an arrow is its label, not a child; an arrow isn't inside the shapes it is
+  // attached to.
+  function nestShapes(elements, frameOf){
+    const live = elements.filter(el => !el.isDeleted && !FRAME_TYPES.includes(el.type) && !(el.type === 'text' && el.containerId));
+    const info = new Map(live.map((el, i) => {
+      const box = elementBox(el);
+      return [el.id, { box, area: (box.x2 - box.x1) * (box.y2 - box.y1), frame: frameOf ? frameOf(el) : null, order: i }];
+    }));
+    const containers = live.filter(el => CONTAINER_SHAPES.includes(el.type) && !el.angle);
+    const parents = {};
+    for(const el of live){
+      const me = info.get(el.id);
+      let best = null;
+      // An arrow attached to a shape isn't inside it
+      const attached = [el.startBinding, el.endBinding].map(b => b && b.elementId);
+      for(const c of containers){
+        if(c === el || attached.includes(c.id)) continue;
+        const other = info.get(c.id);
+        if(other.frame !== me.frame || !boxContains(other.box, me.box)) continue;
+        // Identical boxes contain each other: the one drawn first is the outer one
+        if(other.area === me.area && other.order > me.order) continue;
+        if(!best || other.area < info.get(best.id).area) best = c;
+      }
+      if(best) parents[el.id] = best.id;
+    }
+    return parents;
+  }
+
+  // Excalidraw's z-order is the element order; newer files also carry a
+  // fractional `index` string that sorts the same way.
+  function inDrawOrder(elements){
+    if(!elements.length || !elements.every(el => typeof el.index === 'string')) return elements.slice();
+    return elements.map((el, i) => ({ el, i }))
+      .sort((a, b) => (a.el.index < b.el.index ? -1 : a.el.index > b.el.index ? 1 : a.i - b.i))
+      .map(e => e.el);
+  }
+
+  // Draw order: Excalidraw's, except that a containing shape is drawn right
+  // before its contents (at the position of the earliest one). A container that
+  // is transparent in Excalidraw may get a fill in draw.io, and drawn on top it
+  // would hide everything inside it.
+  function containersFirst(elements, parents){
+    const pos = new Map(elements.map((el, i) => [el.id, i]));
+    const kids = {}, roots = [];
+    for(const el of elements){
+      const p = parents[el.id];
+      if(p && pos.has(p)) (kids[p] = kids[p] || []).push(el);
+      else roots.push(el);
+    }
+    const first = {};
+    const firstOf = el => {
+      if(first[el.id] == null){
+        let k = pos.get(el.id);
+        for(const c of kids[el.id] || []) k = Math.min(k, firstOf(c));
+        first[el.id] = k;
+      }
+      return first[el.id];
+    };
+    const out = [];
+    (function visit(list){
+      for(const el of list.slice().sort((a, b) => firstOf(a) - firstOf(b))){
+        out.push(el);
+        visit(kids[el.id] || []);
+      }
+    })(roots);
+    return out;
+  }
+
   // ---------------------------------------------------------------------------
   // Images
   // ---------------------------------------------------------------------------
@@ -596,7 +701,7 @@
   function convert(excalidata, options){
     const data = (typeof excalidata === 'string') ? JSON.parse(excalidata) : excalidata;
     const opts = resolveOptions(options);
-    const elements = data.elements || [];
+    const elements = inDrawOrder((data.elements || []).filter(el => el && !el.isDeleted));
     opts.roles = flowchartRoles(elements);
     const appState = data.appState || {};
 
@@ -613,38 +718,24 @@
 
     const cellObjs = [];
     const elementToCell = {}; // excalidraw element id -> mx cell id
-    const deferredText = [];  // store text elements for second pass
-    const frameOrigins = {};  // excalidraw frame id -> origin of its children (page coords)
-    const frames = elements.filter(el => !el.isDeleted && FRAME_TYPES.includes(el.type));
-    const frameParents = nestFrames(frames);
-    const frameChildren = {}; // excalidraw frame id -> frames nested directly inside it
-    for(const f of frames){
-      const parentId = frameParents[f.id];
-      if(parentId) (frameChildren[parentId] = frameChildren[parentId] || []).push(f);
-    }
+    const origins = {};       // excalidraw id of a frame / containing shape -> page origin of its children
+    const { frames, frameParents, frameOf } = assignFrames(elements);
+    const liveIds = new Set(elements.map(el => el.id));
+    // Text bound to a shape or an arrow becomes that cell's label (second pass)
+    const isLabel = el => el.type === 'text' && el.containerId && liveIds.has(el.containerId);
+    const shapeParents = nestShapes(elements, frameOf);
+    const hasChildren = new Set(Object.values(shapeParents));
 
-    // An element belongs to its Excalidraw frame, or to the innermost frame
-    // nested in it that fully contains the element.
-    function frameOf(el){
-      let frameId = el.frameId;
-      if(!frameId || !frameOrigins[frameId]) return null;
-      const box = elementBox(el);
-      for(let inner = true; inner;){
-        inner = false;
-        for(const child of frameChildren[frameId] || []){
-          if(boxContains(elementBox(child), box)){ frameId = child.id; inner = true; break; }
-        }
-      }
-      return frameId;
-    }
-
-    // Resolve the parent cell for an element: its frame container (with
-    // coordinates relative to the frame) or the default layer.
+    // Parent of an element: the shape that contains it (when nesting), else its
+    // frame, else the default layer. Coordinates are relative to that parent.
     function placement(el){
-      const frameId = FRAME_TYPES.includes(el.type) ? frameParents[el.id] : frameOf(el);
-      const origin = frameId && frameOrigins[frameId];
-      if(origin && elementToCell[frameId]){
-        return { parent: elementToCell[frameId], dx: origin.x, dy: origin.y };
+      let owner;
+      if(FRAME_TYPES.includes(el.type)) owner = frameParents[el.id];
+      else if(opts.nesting === 'group' && shapeParents[el.id] && origins[shapeParents[el.id]]) owner = shapeParents[el.id];
+      else owner = frameOf(el);
+      const origin = owner && origins[owner];
+      if(origin && elementToCell[owner]){
+        return { parent: elementToCell[owner], dx: origin.x, dy: origin.y };
       }
       return { parent: '1', dx: 0, dy: 0 };
     }
@@ -678,18 +769,18 @@
       // A swimlane's header is part of the cell, so grow it upwards to keep contents in place
       const header = opts.frames === 'swimlane' ? SWIMLANE_HEADER : 0;
       const pl = placement(el);
-      frameOrigins[el.id] = { x, y: y - header };
+      origins[el.id] = { x, y: y - header };
       addVertex(el, frameStyle(el, opts), encodeXml(name), pl.parent, x - pl.dx, y - header - pl.dy, w, h + header);
     }
 
-    for(const el of elements){
-      if(el.isDeleted || FRAME_TYPES.includes(el.type)) continue;
+    const drawn = containersFirst(elements.filter(el => !FRAME_TYPES.includes(el.type) && !isLabel(el)), shapeParents);
+    for(const el of drawn){
       if(el.type === 'text'){
-        // process later (to attach to container / edge if needed)
-        deferredText.push(el);
-        continue;
-      }
-      if(['rectangle','ellipse','diamond','freedraw','image'].includes(el.type)){
+        const w = Math.max(1, Math.round(el.width || (el.fontSize?el.fontSize*6:100)));
+        const h = Math.max(1, Math.round(el.height || (el.fontSize?el.fontSize*1.2:40)));
+        const pl = placement(el);
+        addVertex(el, styleForTextElement(el, opts), buildPlainTextValue(el), pl.parent, ((el.x - minX) || 0) - pl.dx, ((el.y - minY) || 0) - pl.dy, w, h);
+      } else if(['rectangle','ellipse','diamond','freedraw','image'].includes(el.type)){
         const x = (el.x - minX) || 0;
         const y = (el.y - minY) || 0;
         const w = Math.max(1, Math.round(el.width || 100));
@@ -715,8 +806,12 @@
             geomW = payload.width; geomH = payload.height;
           }
         }
-        const style = styleForElement(el, opts, extraStyle);
+        let style = styleForElement(el, opts, extraStyle);
+        // A shape with shapes inside it becomes a draw.io container for them
+        const isContainer = opts.nesting === 'group' && hasChildren.has(el.id);
+        if(isContainer) style += ';container=1;collapsible=0;recursiveResize=0';
         const pl = placement(el);
+        if(isContainer) origins[el.id] = { x: geomX, y: geomY };
         addVertex(el, style, '', pl.parent, geomX - pl.dx, geomY - pl.dy, geomW, geomH);
       } else if(['line','arrow'].includes(el.type)){
         const style = lineStyle(el, opts);
@@ -762,8 +857,8 @@
       }
     }
 
-    // Second pass: text elements
-    for(const el of deferredText){
+    // Second pass: labels (text bound to a shape or an arrow)
+    for(const el of elements.filter(isLabel)){
       const rawValue = buildPlainTextValue(el); // simpler value (preserve line breaks & special chars)
       const style = styleForTextElement(el, opts);
       const fontColor = resolveColors(el, opts).font;
@@ -819,7 +914,7 @@
         const relY = el.y - (containerEl ? containerEl.y : 0);
         addVertex(el, style, rawValue, parentCellId, relX, relY, w, h);
       } else {
-        // standalone text (possibly inside a frame)
+        // label of an element that isn't converted: keep it as plain text
         const pl = placement(el);
         addVertex(el, style, rawValue, pl.parent, x - pl.dx, y - pl.dy, w, h);
       }
@@ -939,7 +1034,8 @@
     // Exposed for unit tests
     internals: {
       colorFamily, resolveColors, excalidrawCornerRadius, mapArrow, mapFont,
-      flowchartRoles, nestFrames, elementBox, boxContains, sanitizeDataUrl
+      flowchartRoles, nestFrames, elementBox, boxContains, sanitizeDataUrl,
+      assignFrames, nestShapes, inDrawOrder, containersFirst
     }
   };
   if(typeof module === 'object' && module.exports) module.exports = api;
