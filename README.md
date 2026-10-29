@@ -9,8 +9,10 @@ index.html               page markup
 styles.css               page styles
 src/converter-drawio.js  Excalidraw JSON -> draw.io XML (presets, styles, frames, flowchart)
 src/svg-extract.js       finds the Excalidraw scene embedded in an exported SVG
-src/main.js              UI wiring (file input, style options, download)
+src/output.js            summary of the converted diagram and "Open in draw.io" link
+src/main.js              UI wiring (drop/paste input, style presets, result actions)
 test/                    unit tests (node:test, no dependencies)
+.github/workflows/       CI running the tests
 ```
 
 `src/converter-drawio.js` and `src/svg-extract.js` are plain scripts. They set `window.ExcDrawio` / `window.ExcSvg` in the browser and `module.exports` in Node.
@@ -25,7 +27,7 @@ ExcDrawio.convertExcalidrawToDrawio(sceneJsonOrObject, options) // -> draw.io XM
 
 ## Tests
 
-Requires Node 18+, with no dependencies to install:
+Requires Node 20+, with no dependencies to install. CI runs them on every push to `main` and on pull requests.
 
 ```sh
 npm test

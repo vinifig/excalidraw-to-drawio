@@ -25,69 +25,70 @@
   // Conversion options
   // ---------------------------------------------------------------------------
 
+  // `group` only organizes the options in the UI
   const OPTION_DEFS = [
-    { key: 'shapes', label: 'Shapes', choices: [
+    { key: 'shapes', group: 'Shapes', label: 'Shapes', choices: [
       ['keep', 'Keep Excalidraw shapes'],
       ['flowchart', 'Flowchart (ellipse = start/end)']
     ]},
-    { key: 'colors', label: 'Colors', choices: [
+    { key: 'colors', group: 'Colors', label: 'Colors', choices: [
       ['keep', 'Keep Excalidraw colors'],
       ['palette', 'Map to draw.io palette'],
       ['flowchart', 'Fixed color per flowchart shape'],
       ['default', 'draw.io default (no colors)']
     ]},
-    { key: 'transparentFill', label: 'Transparent fills', choices: [
+    { key: 'transparentFill', group: 'Colors', label: 'Transparent fills', choices: [
       ['keep', 'Keep transparent'],
       ['white', 'draw.io default (white)']
     ]},
-    { key: 'roundness', label: 'Corners', choices: [
+    { key: 'roundness', group: 'Shapes', label: 'Corners', choices: [
       ['keep', 'Keep Excalidraw radius'],
       ['drawio', 'draw.io rounded when rounded'],
       ['square', 'Always square'],
       ['round', 'Always rounded']
     ]},
-    { key: 'sketch', label: 'Hand-drawn (sketch)', choices: [
+    { key: 'sketch', group: 'Shapes', label: 'Hand-drawn (sketch)', choices: [
       ['keep', 'Keep (from roughness / fill style)'],
       ['on', 'Always sketch'],
       ['off', 'Never sketch']
     ]},
-    { key: 'font', label: 'Fonts', choices: [
+    { key: 'font', group: 'Text', label: 'Fonts', choices: [
       ['keep', 'Closest to Excalidraw fonts'],
       ['default', 'draw.io default (Helvetica)']
     ]},
-    { key: 'strokeWidth', label: 'Stroke width', choices: [
+    { key: 'strokeWidth', group: 'Lines & strokes', label: 'Stroke width', choices: [
       ['keep', 'Keep Excalidraw width'],
       ['default', 'draw.io default (1)']
     ]},
-    { key: 'strokeStyle', label: 'Dashed / dotted', choices: [
+    { key: 'strokeStyle', group: 'Lines & strokes', label: 'Dashed / dotted', choices: [
       ['keep', 'Keep'],
       ['solid', 'Always solid']
     ]},
-    { key: 'arrowheads', label: 'Arrowheads', choices: [
+    { key: 'arrowheads', group: 'Arrows', label: 'Arrowheads', choices: [
       ['keep', 'Closest to Excalidraw'],
       ['drawio', 'draw.io classic arrow']
     ]},
-    { key: 'connect', label: 'Arrow bindings', choices: [
+    { key: 'connect', group: 'Arrows', label: 'Arrow bindings', choices: [
       ['free', 'Free-floating arrows'],
       ['bind', 'Connect arrows to shapes']
     ]},
-    { key: 'edgeRouting', label: 'Arrow routing', choices: [
+    { key: 'edgeRouting', group: 'Arrows', label: 'Arrow routing', choices: [
       ['keep', 'Follow Excalidraw points'],
       ['orthogonal', 'draw.io orthogonal (auto)']
     ]},
-    { key: 'edgeShape', label: 'Lines', choices: [
+    { key: 'edgeShape', group: 'Lines & strokes', label: 'Lines', choices: [
       ['filled', 'Filled edge'],
       ['standard', 'Standard connector']
     ]},
-    { key: 'opacity', label: 'Opacity', choices: [
+    { key: 'opacity', group: 'Colors', label: 'Opacity', choices: [
       ['keep', 'Keep'],
       ['ignore', 'Ignore (fully opaque)']
     ]},
-    { key: 'frames', label: 'Frames', choices: [
+    { key: 'frames', group: 'Page', label: 'Frames', choices: [
       ['excalidraw', 'Excalidraw-like frame'],
       ['swimlane', 'draw.io container (swimlane)']
     ]},
-    { key: 'canvas', label: 'Canvas', choices: [
+    { key: 'canvas', group: 'Page', label: 'Canvas', choices: [
       ['keep', 'Keep background & grid'],
       ['default', 'draw.io default']
     ]}
